@@ -19,6 +19,11 @@ def compute_team_points_multi(
       - overall: sum across rounds
     Optionally return per-round totals.
 
+    Average points (AP) rounds ARE included. The 999 sentinel value stored for
+    AP results is replaced with the rider's real average (mean of their non-AP
+    FIN results in that DB) so they score a representative amount rather than
+    inflating or being excluded from the team totals.
+
     Expected schema in each DB:
       riders(id, club_name, ...)
       results(rider_id, round, points, is_ap, status, ...)
@@ -38,14 +43,29 @@ def compute_team_points_multi(
         aliases.append(alias)
         cur.execute(f"ATTACH DATABASE ? AS {alias};", (path,))
 
-    # Build UNION of all result rows across attached DBs
+    # Build UNION of all result rows across attached DBs.
+    # For AP rows (is_ap=1 or points=999), substitute the rider's real average
+    # (mean of their non-AP FIN results in the same DB) so they score correctly
+    # rather than carrying the 999 sentinel value.
     union_parts = []
     for a in aliases:
         union_parts.append(f"""
             SELECT
                 TRIM(r.club_name) AS club_name,
                 res.round AS round_number,
-                COALESCE(res.points, 0) AS points,
+                CASE
+                    WHEN COALESCE(res.is_ap, 0) = 1 OR res.points = 999 THEN
+                        COALESCE((
+                            SELECT AVG(r2.points)
+                            FROM {a}.results r2
+                            WHERE r2.rider_id = res.rider_id
+                              AND COALESCE(r2.is_ap, 0) = 0
+                              AND r2.points IS NOT NULL
+                              AND r2.points != 999
+                              AND r2.status = 'FIN'
+                        ), 0)
+                    ELSE COALESCE(res.points, 0)
+                END AS points,
                 COALESCE(res.is_ap, 0) AS is_ap,
                 COALESCE(res.status, 'FIN') AS status
             FROM {a}.results res
@@ -75,7 +95,7 @@ def compute_team_points_multi(
         Filtered AS (
             SELECT club_name, round_number, points
             FROM AllRows
-            WHERE is_ap = 0
+            WHERE 1=1
               {exclude_club_clause}
               {exclude_status_clause}
         ),
@@ -103,7 +123,7 @@ def compute_team_points_multi(
         params.append(top_n)
         cur.execute(sql, params)
         rows = cur.fetchall()
-        return [(r["round_number"], r["club_name"], r["topn_points"]) for r in rows]
+        return [(r["round_number"], r["club_name"], round(r["topn_points"])) for r in rows]
 
     else:
         sql = f"""
@@ -113,7 +133,7 @@ def compute_team_points_multi(
         Filtered AS (
             SELECT club_name, round_number, points
             FROM AllRows
-            WHERE is_ap = 0
+            WHERE 1=1
               {exclude_club_clause}
               {exclude_status_clause}
         ),
@@ -140,7 +160,7 @@ def compute_team_points_multi(
         params.append(top_n)
         cur.execute(sql, params)
         rows = cur.fetchall()
-        return [(r["club_name"], r["total_points"]) for r in rows]
+        return [(r["club_name"], round(r["total_points"])) for r in rows]
 
 
 def main():
@@ -183,4 +203,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

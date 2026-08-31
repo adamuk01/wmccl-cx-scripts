@@ -478,7 +478,11 @@ def render_pdf(
 
     numeric_headers = {"Pos", "No", "TY", "LY"}
 
-    row_h = 4.2 * mm
+    # Extra breathing room between the right-aligned "No" column and the
+    # left-aligned "First" column, so numbers don't butt up against names.
+    NAME_GAP = 3 * mm
+
+    row_h = 5.6 * mm
     stripe_color = colors.HexColor("#F2F2F2")
     stripe_on = False
 
@@ -489,7 +493,7 @@ def render_pdf(
         if name in numeric_headers:
             c.drawRightString(x + w*mm - 1*mm, y, name)
         else:
-            c.drawString(x, y, name)
+            c.drawString(x + (NAME_GAP if name == "First" else 0), y, name)
         x += w * mm
     y -= 6 * mm
     c.setFont("Helvetica", 10.5)
@@ -517,7 +521,7 @@ def render_pdf(
             if name in numeric_headers:
                 c.drawRightString(x2 + w*mm - 1*mm, y, name)
             else:
-                c.drawString(x2, y, name)
+                c.drawString(x2 + (NAME_GAP if name == "First" else 0), y, name)
             x2 += w * mm
         y -= 6 * mm
         c.setFont("Helvetica", 10.5)
@@ -580,7 +584,7 @@ def render_pdf(
         x += cols[1][1] * mm
 
         # First / Last
-        c.drawString(x, y, str(r.get("first_name", ""))[:20])
+        c.drawString(x + NAME_GAP, y, str(r.get("first_name", ""))[:20])
         x += cols[2][1] * mm
 
         c.drawString(x, y, str(r.get("last_name", ""))[:22])
@@ -867,4 +871,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

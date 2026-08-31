@@ -82,6 +82,10 @@ def safe_int(x, default=None):
         return default
 
 
+# Time field values that indicate a rider did not finish
+NON_FINISHER_STATUSES = {"dnf", "dns", "dsq", "dq", "otl", "did not finish",
+                          "did not start", "disqualified", "lapped"}
+
 def parse_time_seconds(s):
     """
     Parse 'HH:MM:SS' or 'MM:SS' into seconds. Returns None if blank/unparseable.
@@ -102,6 +106,17 @@ def parse_time_seconds(s):
         return float(parts[0])
     except ValueError:
         return None
+
+
+def is_non_finisher(time_str):
+    """
+    Return True if the Time field contains a DNF/DNS/DSQ marker rather than
+    an actual time. D3 RaceTec exports DNF riders with their position but
+    'DNF' in the Time column — we must exclude these from finishers.
+    """
+    if time_str is None:
+        return False
+    return str(time_str).strip().lower() in NON_FINISHER_STATUSES
 
 
 def normalise_gender(g):
@@ -225,8 +240,14 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table):
             stats["filtered_nonleague"] += 1
             continue
 
+        # Exclude DNF/DNS/DSQ — D3 exports these with a position but "DNF" in Time
+        raw_time = r.get("Time", "")
+        if is_non_finisher(raw_time):
+            stats["skipped_nonfinisher"] = stats.get("skipped_nonfinisher", 0) + 1
+            continue
+
         csv_pos = safe_int(r.get("Pos"))
-        time_sec = parse_time_seconds(r.get("Time"))
+        time_sec = parse_time_seconds(raw_time)
         if csv_pos is None and time_sec is None:
             stats["skipped_missing_ordering"] += 1
             continue
@@ -447,6 +468,7 @@ def main():
     print(f"  Filtered non-league (>= {args.nonleague_threshold})       : {stats['filtered_nonleague']}")
     print(f"  Skipped missing Race No               : {stats['skipped_missing_raceno']}")
     print(f"  Skipped missing Pos/Time              : {stats['skipped_missing_ordering']}")
+    print(f"  Skipped DNF/DNS/DSQ                   : {stats.get('skipped_nonfinisher', 0)}")
     print(f"  Unknown/blank gender rows             : {stats['unknown_gender']}")
     print(f"  League rows kept                      : {stats['kept_league']}")
     print(f"  Split genders                         : {args.split_genders}")

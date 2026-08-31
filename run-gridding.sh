@@ -42,7 +42,7 @@ done
 mkdir -p "$OUTDIR"
 
 echo "==> Producing RiderHQ category CSV"
-produce_category_from_riderHQ.py --as-of 2025-12-31 "$RIDERHQ_IN" "$RIDERHQ_OUT"
+produce_category_from_riderHQ.py --as-of 2026-12-31 "$RIDERHQ_IN" "$RIDERHQ_OUT"
 
 echo "==> Generating grids using config: $CONFIG"
 generate_grids.py \
