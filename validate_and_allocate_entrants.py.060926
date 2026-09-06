@@ -51,22 +51,6 @@ def norm_name(s: str) -> str:
     return norm(s).lower()
 
 
-def _resolve_two_digit_year(yy: int) -> int:
-    """
-    Resolve a 2-digit year relative to TODAY's year, matching the approach
-    already used in initial-riderHQ-data-import.py's parse_yob_from_dob().
-
-    strptime's built-in '%y' uses a FIXED pivot (00-68 -> 2000-2068,
-    69-99 -> 1900-1999), which silently mis-centuries anyone born before
-    ~1969 in a 2-digit-year format -- e.g. DOB year '58' becomes 2058
-    instead of 1958 -- breaking name+DOB matching against a rider whose
-    other record uses a 4-digit-year DOB for the same date.
-    """
-    today = datetime.today()
-    last_two = today.year % 100
-    return (1900 + yy) if yy > last_two else (2000 + yy)
-
-
 def norm_dob(dob: str) -> str:
     """
     Normalise DOB to YYYY-MM-DD where possible.
@@ -74,34 +58,24 @@ def norm_dob(dob: str) -> str:
       07-Sep-12
       10/31/20
       31/10/2012
-      2/3/58
       2012-09-07
     """
     d = norm(dob)
     if not d:
         return ""
-
-    # 4-digit-year formats are unambiguous -- try these first.
-    for f in ("%d-%b-%Y", "%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d"):
+    fmts = [
+        "%d-%b-%y",
+        "%d-%b-%Y",
+        "%m/%d/%y",
+        "%m/%d/%Y",
+        "%d/%m/%Y",
+        "%Y-%m-%d",
+    ]
+    for f in fmts:
         try:
             return datetime.strptime(d, f).strftime("%Y-%m-%d")
         except ValueError:
             continue
-
-    # 2-digit-year formats: parse for day/month, then resolve the century
-    # ourselves rather than trusting strptime's fixed 68/69 pivot.
-    for f in ("%d-%b-%y", "%m/%d/%y"):
-        try:
-            dt = datetime.strptime(d, f)
-        except ValueError:
-            continue
-        year = _resolve_two_digit_year(dt.year % 100)
-        try:
-            dt = dt.replace(year=year)
-        except ValueError:
-            continue
-        return dt.strftime("%Y-%m-%d")
-
     return d.lower()
 
 
@@ -250,21 +224,8 @@ def main():
                         f"Membership number {rn} not found in any DB."
                     )
             else:
-                # No Membership number supplied on this row. Always check the
-                # name+DOB index, REGARDLESS of the 'Has membership' flag.
-                #
-                # Why: some riders register for the league on one RiderHQ
-                # account (which has their Membership number) but enter a
-                # specific race from a second account (e.g. a parent's login)
-                # that RiderHQ correctly reports as 'Has membership=false'
-                # because THAT account isn't the member. If we only look at
-                # 'Has membership', we silently treat them as a brand-new
-                # non-league rider and hand them a fresh 900+ number, which
-                # orphans that race's results away from their real league
-                # membership, category history, and average points.
-                matches = name_dob_index.get(csv_key, [])
-
                 if has_membership:
+                    matches = name_dob_index.get(csv_key, [])
                     if len(matches) == 1:
                         issues.append(
                             f"Line {line_no}: League rider missing Membership number. "
@@ -280,28 +241,6 @@ def main():
                             f"Line {line_no}: League rider missing Membership number. "
                             f"No DB match for '{first} {last}' DOB={dob_raw}."
                         )
-                else:
-                    # 'Has membership' says NO -- but if name+DOB matches an
-                    # existing league rider, this is very likely a duplicate
-                    # RiderHQ account for the SAME person, not a new entrant.
-                    if len(matches) == 1:
-                        issues.append(
-                            f"Line {line_no}: '{first} {last}' (DOB={dob_raw}) is marked "
-                            f"'Has membership'=false but matches an EXISTING league "
-                            f"rider (race_number={matches[0]}) by name+DOB. Likely a "
-                            f"duplicate RiderHQ account -- verify and set Membership "
-                            f"number={matches[0]} (correcting 'Has membership' if "
-                            f"appropriate) before importing, rather than allocating a "
-                            f"new non-league number."
-                        )
-                    elif len(matches) > 1:
-                        issues.append(
-                            f"Line {line_no}: '{first} {last}' (DOB={dob_raw}) is marked "
-                            f"'Has membership'=false but matches MULTIPLE existing "
-                            f"league riders by name+DOB: {matches}. Verify manually -- "
-                            f"possible duplicate RiderHQ account or duplicate DB entries."
-                        )
-                    # else: genuinely no DB match -> a real non-league entrant, fine.
 
             cleaned_rows.append(clean)
 
@@ -348,3 +287,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -486,13 +486,6 @@ def render_pdf(
     stripe_color = colors.HexColor("#F2F2F2")
     stripe_on = False
 
-    page_num = 1
-
-    def draw_footer(page_no: int):
-        c.setFont("Helvetica", 8)
-        c.drawCentredString(width / 2, 8 * mm, f"Page {page_no}")
-        c.setFont("Helvetica", 10.5)
-
     # Draw column headers
     c.setFont("Helvetica-Bold", 10.5)
     x = left
@@ -506,10 +499,8 @@ def render_pdf(
     c.setFont("Helvetica", 10.5)
 
     def new_page():
-        nonlocal y, stripe_on, page_num
-        draw_footer(page_num)
+        nonlocal y, stripe_on
         c.showPage()
-        page_num += 1
 
         # Page header
         c.setFont("Helvetica-Bold", 14)
@@ -633,7 +624,7 @@ def render_pdf(
 
         y -= row_h
 
-    draw_footer(page_num)
+
 
     c.save()
 

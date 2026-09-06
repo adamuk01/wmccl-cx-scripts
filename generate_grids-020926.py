@@ -486,13 +486,6 @@ def render_pdf(
     stripe_color = colors.HexColor("#F2F2F2")
     stripe_on = False
 
-    page_num = 1
-
-    def draw_footer(page_no: int):
-        c.setFont("Helvetica", 8)
-        c.drawCentredString(width / 2, 8 * mm, f"Page {page_no}")
-        c.setFont("Helvetica", 10.5)
-
     # Draw column headers
     c.setFont("Helvetica-Bold", 10.5)
     x = left
@@ -506,10 +499,8 @@ def render_pdf(
     c.setFont("Helvetica", 10.5)
 
     def new_page():
-        nonlocal y, stripe_on, page_num
-        draw_footer(page_num)
+        nonlocal y, stripe_on
         c.showPage()
-        page_num += 1
 
         # Page header
         c.setFont("Helvetica-Bold", 14)
@@ -538,22 +529,11 @@ def render_pdf(
         stripe_on = False
 
     # Draw rows
-    current_heading = None  # tracks the most recently drawn section heading,
-                             # so it can be repeated if that section's rows
-                             # spill onto a new page.
-
-    for i, r in enumerate(rows):
+    for r in rows:
         # Section headings
         if r.get("_type") == "heading":
-            # Is the very next item one of this heading's data rows?
-            next_is_data = (i + 1 < len(rows)) and not rows[i + 1].get("_type")
-            # Require room for the heading itself, plus its first row if one
-            # follows immediately - otherwise the heading gets orphaned at
-            # the bottom of the page with its rows pushed to the next page.
-            needed = 20 * mm + (row_h if next_is_data else 0)
-            if y < needed:
+            if y < 20 * mm:
                 new_page()
-            current_heading = r["text"]
             c.setFont("Helvetica-Bold", 12)
             c.drawString(left, y, r["text"])
             c.setFont("Helvetica", 10.5)
@@ -577,14 +557,6 @@ def render_pdf(
 
         if y < 18 * mm:
             new_page()
-            # This data row belongs to a section whose heading was printed
-            # on the previous page - repeat it here so the table is still
-            # readable without flipping back.
-            if current_heading:
-                c.setFont("Helvetica-Bold", 12)
-                c.drawString(left, y, f"{current_heading} (cont'd)")
-                c.setFont("Helvetica", 10.5)
-                y -= 6 * mm
 
         # Zebra striping
         stripe_on = not stripe_on
@@ -633,7 +605,7 @@ def render_pdf(
 
         y -= row_h
 
-    draw_footer(page_num)
+
 
     c.save()
 
