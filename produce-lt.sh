@@ -21,11 +21,11 @@ export_league_tables.py --db Youth.db --profile youth --avg-decimals 1
 echo "Running Womens league tables"
 export_league_tables.py --db Women.db --profile women --avg-decimals 1
 
-echo "Running Masters league tables"
-export_league_tables.py --db Masters.db --profile masters --avg-decimals 1
-
 echo "Running Senior league tables"
 export_league_tables.py --db Seniors.db --profile seniors --avg-decimals 1
+
+echo "Running Masters league tables"
+export_league_tables.py --db Masters.db --profile masters --avg-decimals 1
 
 #echo "Running Team awards update"
 #run-team-awards-results.sh $Week

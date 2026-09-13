@@ -51,22 +51,6 @@ def norm_name(s: str) -> str:
     return norm(s).lower()
 
 
-def _resolve_two_digit_year(yy: int) -> int:
-    """
-    Resolve a 2-digit year relative to TODAY's year, matching the approach
-    already used in initial-riderHQ-data-import.py's parse_yob_from_dob().
-
-    strptime's built-in '%y' uses a FIXED pivot (00-68 -> 2000-2068,
-    69-99 -> 1900-1999), which silently mis-centuries anyone born before
-    ~1969 in a 2-digit-year format -- e.g. DOB year '58' becomes 2058
-    instead of 1958 -- breaking name+DOB matching against a rider whose
-    other record uses a 4-digit-year DOB for the same date.
-    """
-    today = datetime.today()
-    last_two = today.year % 100
-    return (1900 + yy) if yy > last_two else (2000 + yy)
-
-
 def norm_dob(dob: str) -> str:
     """
     Normalise DOB to YYYY-MM-DD where possible.
@@ -74,45 +58,52 @@ def norm_dob(dob: str) -> str:
       07-Sep-12
       10/31/20
       31/10/2012
-      2/3/58
       2012-09-07
     """
     d = norm(dob)
     if not d:
         return ""
-
-    # 4-digit-year formats are unambiguous -- try these first.
-    for f in ("%d-%b-%Y", "%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d"):
+    fmts = [
+        "%d-%b-%y",
+        "%d-%b-%Y",
+        "%m/%d/%y",
+        "%m/%d/%Y",
+        "%d/%m/%Y",
+        "%Y-%m-%d",
+    ]
+    for f in fmts:
         try:
             return datetime.strptime(d, f).strftime("%Y-%m-%d")
         except ValueError:
             continue
-
-    # 2-digit-year formats: parse for day/month, then resolve the century
-    # ourselves rather than trusting strptime's fixed 68/69 pivot.
-    for f in ("%d-%b-%y", "%m/%d/%y"):
-        try:
-            dt = datetime.strptime(d, f)
-        except ValueError:
-            continue
-        year = _resolve_two_digit_year(dt.year % 100)
-        try:
-            dt = dt.replace(year=year)
-        except ValueError:
-            continue
-        return dt.strftime("%Y-%m-%d")
-
     return d.lower()
 
 
-def load_db_indexes(db_paths: List[Path]) -> Tuple[Set[int], Dict[Tuple[str, str, str], List[int]]]:
+def normalise_sex(s: Optional[str]) -> str:
+    """
+    Normalise a gender/sex value down to 'M', 'F', or '' if unknown/blank.
+    Handles DB values like 'Male'/'Female' and CSV values like 'M'/'F'.
+    """
+    s = norm(s).lower()
+    if s.startswith("f"):
+        return "F"
+    if s.startswith("m"):
+        return "M"
+    return ""
+
+
+def load_db_indexes(
+    db_paths: List[Path],
+) -> Tuple[Set[int], Dict[Tuple[str, str, str], List[int]], Dict[int, str]]:
     """
     Returns:
       - all race_numbers across all DBs
       - mapping: (firstname, surname, dob) -> [race_numbers]
+      - mapping: race_number -> normalised gender ('M'/'F') on record in the DB
     """
     race_numbers: Set[int] = set()
     name_dob_index: Dict[Tuple[str, str, str], List[int]] = {}
+    gender_by_race_number: Dict[int, str] = {}
 
     for db in db_paths:
         conn = sqlite3.connect(str(db))
@@ -121,15 +112,19 @@ def load_db_indexes(db_paths: List[Path]) -> Tuple[Set[int], Dict[Tuple[str, str
         cur.execute("PRAGMA table_info(riders)")
         cols = {r[1] for r in cur.fetchall()}
         has_dob = "DOB" in cols
+        has_gender = "gender" in cols
 
-        if has_dob:
-            cur.execute("SELECT race_number, firstname, surname, DOB FROM riders")
-            rows = cur.fetchall()
-        else:
-            cur.execute("SELECT race_number, firstname, surname FROM riders")
-            rows = [(rn, fn, sn, "") for rn, fn, sn in cur.fetchall()]
+        select_cols = [
+            "race_number",
+            "firstname",
+            "surname",
+            "DOB" if has_dob else "NULL",
+            "gender" if has_gender else "NULL",
+        ]
+        cur.execute(f"SELECT {', '.join(select_cols)} FROM riders")
+        rows = cur.fetchall()
 
-        for rn, fn, sn, dob in rows:
+        for rn, fn, sn, dob, gender in rows:
             if rn is None:
                 continue
             try:
@@ -143,12 +138,16 @@ def load_db_indexes(db_paths: List[Path]) -> Tuple[Set[int], Dict[Tuple[str, str
             if all(key):
                 name_dob_index.setdefault(key, []).append(rn_i)
 
+            g = normalise_sex(gender or "")
+            if g:
+                gender_by_race_number[rn_i] = g
+
         conn.close()
 
     for k in name_dob_index:
         name_dob_index[k] = sorted(set(name_dob_index[k]))
 
-    return race_numbers, name_dob_index
+    return race_numbers, name_dob_index, gender_by_race_number
 
 
 def next_free(start: int, used: Set[int]) -> int:
@@ -186,7 +185,7 @@ def main():
     for p in db_paths:
         print(f"  - {p.name}")
 
-    db_numbers, name_dob_index = load_db_indexes(db_paths)
+    db_numbers, name_dob_index, gender_by_race_number = load_db_indexes(db_paths)
 
     issues: List[str] = []
     seen_rows = set()
@@ -205,6 +204,10 @@ def main():
         for c in required_cols:
             if c not in headers:
                 raise SystemExit(f"❌ Missing required column '{c}'")
+
+        has_sex_col = "sex" in headers
+        if not has_sex_col:
+            print("⚠️  WARNING: entrants CSV has no 'sex' column — gender cross-check against DB will be skipped.")
 
         for line_no, row in enumerate(reader, start=2):
             clean = {h: norm(row.get(h, "")) for h in headers}
@@ -249,22 +252,19 @@ def main():
                         f"Line {line_no}: League rider '{first} {last}' (DOB={dob_raw}) "
                         f"Membership number {rn} not found in any DB."
                     )
-            else:
-                # No Membership number supplied on this row. Always check the
-                # name+DOB index, REGARDLESS of the 'Has membership' flag.
-                #
-                # Why: some riders register for the league on one RiderHQ
-                # account (which has their Membership number) but enter a
-                # specific race from a second account (e.g. a parent's login)
-                # that RiderHQ correctly reports as 'Has membership=false'
-                # because THAT account isn't the member. If we only look at
-                # 'Has membership', we silently treat them as a brand-new
-                # non-league rider and hand them a fresh 900+ number, which
-                # orphans that race's results away from their real league
-                # membership, category history, and average points.
-                matches = name_dob_index.get(csv_key, [])
 
+                if has_sex_col:
+                    db_gender = gender_by_race_number.get(rn)
+                    entry_gender = normalise_sex(clean.get("sex", ""))
+                    if db_gender and entry_gender and db_gender != entry_gender:
+                        issues.append(
+                            f"Line {line_no}: GENDER MISMATCH for '{first} {last}' "
+                            f"(Membership number {rn}): DB has '{db_gender}', "
+                            f"entry form says '{entry_gender}'. Check before importing results."
+                        )
+            else:
                 if has_membership:
+                    matches = name_dob_index.get(csv_key, [])
                     if len(matches) == 1:
                         issues.append(
                             f"Line {line_no}: League rider missing Membership number. "
@@ -280,28 +280,6 @@ def main():
                             f"Line {line_no}: League rider missing Membership number. "
                             f"No DB match for '{first} {last}' DOB={dob_raw}."
                         )
-                else:
-                    # 'Has membership' says NO -- but if name+DOB matches an
-                    # existing league rider, this is very likely a duplicate
-                    # RiderHQ account for the SAME person, not a new entrant.
-                    if len(matches) == 1:
-                        issues.append(
-                            f"Line {line_no}: '{first} {last}' (DOB={dob_raw}) is marked "
-                            f"'Has membership'=false but matches an EXISTING league "
-                            f"rider (race_number={matches[0]}) by name+DOB. Likely a "
-                            f"duplicate RiderHQ account -- verify and set Membership "
-                            f"number={matches[0]} (correcting 'Has membership' if "
-                            f"appropriate) before importing, rather than allocating a "
-                            f"new non-league number."
-                        )
-                    elif len(matches) > 1:
-                        issues.append(
-                            f"Line {line_no}: '{first} {last}' (DOB={dob_raw}) is marked "
-                            f"'Has membership'=false but matches MULTIPLE existing "
-                            f"league riders by name+DOB: {matches}. Verify manually -- "
-                            f"possible duplicate RiderHQ account or duplicate DB entries."
-                        )
-                    # else: genuinely no DB match -> a real non-league entrant, fine.
 
             cleaned_rows.append(clean)
 

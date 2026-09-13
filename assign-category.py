@@ -22,8 +22,8 @@ HOW IT WORKS:
         13–14      -> U14
         15–16      -> U16
         17–18      -> Jun
-        19–24      -> U23
-        25–40      -> Sen
+        19–22      -> U23
+        23–40      -> Sen
         41–45      -> M40
         46–50      -> M45
         51–55      -> M50
@@ -78,9 +78,9 @@ def get_base_category_from_age(age: int | None) -> str | None:
         return "U16"
     elif 17 <= age <= 18:
         return "Jun"
-    elif 19 <= age <= 24:
+    elif 19 <= age <= 22:
         return "U23"
-    elif 25 <= age <= 40:
+    elif 23 <= age <= 40:
         return "Sen"
     elif 41 <= age <= 45:
         return "M40"

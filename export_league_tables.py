@@ -341,7 +341,7 @@ def main():
                     help="Grouping rules matching your DB/race")
     ap.add_argument("--outdir", default=".", help="Base output directory (default: .)")
     ap.add_argument("--rounds", type=int, default=12, help="Number of rounds columns to export (default: 12)")
-    ap.add_argument("--best", type=int, default=10, help="Best N results (default: 10)")
+    ap.add_argument("--best", type=int, default=9, help="Best N results (default: 9)")
     ap.add_argument("--upto-round", type=int, default=None,
                     help="Compute averages using results up to this round (inclusive). "
                          "Default: max round present in DB (capped by --rounds).")

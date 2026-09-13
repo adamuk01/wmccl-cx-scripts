@@ -31,18 +31,18 @@ echo "Running TEAM COMPETITION - Highest scoring 6 riders from each club per rou
 
 # Youth team (U8+U10+U12 combined)
 team_points_multi.py U8.db U10.db U12.db \
-  --exclude-club "No Club/Team" \
+  --exclude-club "No Club or Team" \
   > "$OUTDIR/youth_team.csv"
 
 # Adults team (Women+Seniors+Masters+Youth combined)
 team_points_multi.py Women.db Seniors.db Masters.db Youth.db \
-  --exclude-club "No Club/Team" \
+  --exclude-club "No Club or Team" \
   > "$OUTDIR/adult_team.csv"
 
 echo "Running Participation Award (Completed rides - FIN only) for the Mick Ives Trophy"
 
 club_completed_rides_multi.py U8.db U10.db U12.db Women.db Seniors.db Masters.db Youth.db \
-  --exclude-club "No Club/Team" \
+  --exclude-club "No Club or Team" \
   > "$OUTDIR/participation.csv"
 
 echo "Done. Outputs in $OUTDIR/"

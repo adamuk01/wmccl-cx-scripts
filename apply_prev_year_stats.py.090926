@@ -13,19 +13,6 @@ Matching is done on:
     - surname
     - DOB     (string, e.g. '10/31/20')
 
-SAFE TO RE-RUN:
-    By default, a rider is only updated if BOTH
-    race_category_previous_year and average_points_last_year are currently
-    blank/NULL in the DB. Riders who already have these values set are
-    left untouched and reported as "already set (skipped)".
-
-    This makes it safe to add new riders to the DB after the first run and
-    re-apply the same CSV - only the new riders (with blank prev-year
-    fields) will get populated; everyone else keeps whatever is already
-    there (including any manual corrections you've made since).
-
-    Use --force if you deliberately want to overwrite existing values.
-
 USUAL WORKFLOW:
     1) Export from OLD DB:
          python3 export_prev_year_stats.py --db old_season.db --out prev_year_stats.csv
@@ -34,9 +21,6 @@ USUAL WORKFLOW:
          python3 apply_prev_year_stats.py --db u8.db   --csv prev_year_stats.csv
          python3 apply_prev_year_stats.py --db u10.db  --csv prev_year_stats.csv
          ...
-
-    3) Later, after adding new riders to a DB, just re-run the same command.
-       Existing riders' prev-year stats are left alone; new riders get filled in.
 
 ASSUMPTIONS:
     - NEW DB has a 'riders' table with:
@@ -88,26 +72,10 @@ def safe_float(value, default=None):
         return default
 
 
-def already_set(prev_cat, prev_avg) -> bool:
-    """
-    Treat a rider as 'already done' if either field currently holds a
-    real (non-blank) value. That way a rider who legitimately has no
-    average (e.g. prev_avg is NULL) but does have a prev category won't
-    get re-processed and potentially have a good category blanked out.
-    """
-    cat_has_value = prev_cat is not None and str(prev_cat).strip() != ""
-    avg_has_value = prev_avg is not None and str(prev_avg).strip() != ""
-    return cat_has_value or avg_has_value
-
-
 # -------- Core logic --------
 
-def apply_prev_year_stats(db_path: Path, csv_path: Path, dry_run: bool = False, force: bool = False):
+def apply_prev_year_stats(db_path: Path, csv_path: Path, dry_run: bool = False):
     print(f"\nUpdating {db_path} from {csv_path} ...")
-    if force:
-        print("  --force enabled: existing prev-year values WILL be overwritten.")
-    else:
-        print("  Existing prev-year values will be left untouched (default, safe to re-run).")
 
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
@@ -116,7 +84,6 @@ def apply_prev_year_stats(db_path: Path, csv_path: Path, dry_run: bool = False, 
     matched = 0
     not_found = 0
     multi_match = 0
-    skipped_already_set = 0
 
     # Quick check: does DB have the columns we want to update?
     # (This will throw if the schema is very different)
@@ -155,13 +122,10 @@ def apply_prev_year_stats(db_path: Path, csv_path: Path, dry_run: bool = False, 
                 # Skip incomplete lines silently or log if you want
                 continue
 
-            # Find matching rider in NEW DB, including their CURRENT
-            # prev-year fields so we can decide whether to skip them.
+            # Find matching rider in NEW DB
             cur.execute(
                 """
-                SELECT id, firstname, surname, DOB,
-                       race_category_previous_year,
-                       average_points_last_year
+                SELECT id, firstname, surname, DOB
                 FROM riders
                 WHERE firstname = ? AND surname = ? AND DOB = ?
                 """,
@@ -181,15 +145,7 @@ def apply_prev_year_stats(db_path: Path, csv_path: Path, dry_run: bool = False, 
                 continue
 
             # Exactly one match
-            (rider_id, db_first, db_last, db_dob,
-             existing_prev_cat, existing_prev_avg) = matches[0]
-
-            if not force and already_set(existing_prev_cat, existing_prev_avg):
-                skipped_already_set += 1
-                print(f"  ALREADY SET (skipped) #{rider_id}: {db_first} {db_last}, DOB={db_dob} "
-                      f"-> existing prev_cat={existing_prev_cat!r}, existing prev_avg={existing_prev_avg!r}")
-                continue
-
+            (rider_id, db_first, db_last, db_dob) = matches[0]
             matched += 1
 
             print(f"  MATCH  #{rider_id}: {db_first} {db_last}, DOB={db_dob} "
@@ -208,20 +164,18 @@ def apply_prev_year_stats(db_path: Path, csv_path: Path, dry_run: bool = False, 
 
     if dry_run:
         print(f"\nDry run complete for {db_path}.")
-        print(f"  CSV rows processed     : {total_rows}")
-        print(f"  Matched & would update : {matched}")
-        print(f"  Already set (skipped)  : {skipped_already_set}")
-        print(f"  No match               : {not_found}")
-        print(f"  Multiple matches       : {multi_match}")
+        print(f"  CSV rows processed   : {total_rows}")
+        print(f"  Matched & would update: {matched}")
+        print(f"  No match              : {not_found}")
+        print(f"  Multiple matches      : {multi_match}")
         conn.rollback()
     else:
         conn.commit()
         print(f"\nDone updating {db_path}.")
-        print(f"  CSV rows processed     : {total_rows}")
-        print(f"  Matched & updated      : {matched}")
-        print(f"  Already set (skipped)  : {skipped_already_set}")
-        print(f"  No match               : {not_found}")
-        print(f"  Multiple matches       : {multi_match}")
+        print(f"  CSV rows processed   : {total_rows}")
+        print(f"  Matched & updated    : {matched}")
+        print(f"  No match             : {not_found}")
+        print(f"  Multiple matches     : {multi_match}")
 
     conn.close()
 
@@ -233,9 +187,6 @@ def main():
     parser.add_argument("--db", required=True, help="Path to NEW season SQLite DB (e.g. u8.db)")
     parser.add_argument("--csv", required=True, help="CSV exported from previous season")
     parser.add_argument("--dry-run", action="store_true", help="Show actions but don't write changes.")
-    parser.add_argument("--force", action="store_true",
-                         help="Overwrite prev-year fields even if already set "
-                              "(default: skip riders that already have a value).")
     args = parser.parse_args()
 
     from pathlib import Path
@@ -293,8 +244,9 @@ def main():
     conn.close()
 
     # ---- If we get here, DB is valid. Run update. ----
-    apply_prev_year_stats(Path(args.db), Path(args.csv), dry_run=args.dry_run, force=args.force)
+    apply_prev_year_stats(Path(args.db), Path(args.csv), dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
     main()
+

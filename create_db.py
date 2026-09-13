@@ -36,7 +36,7 @@ RACE_DATABASES = [
 ]
 
 MAX_ROUNDS = 12   # change any season
-BEST_N = 10       # best-X rule
+BEST_N = 10       # best-X rule - shoudl probably change this each year!
 
 # ---------------------------------------------------------------------------
 

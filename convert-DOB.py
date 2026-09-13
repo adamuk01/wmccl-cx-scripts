@@ -6,8 +6,8 @@ Used after exporting data form previous year and neet to match new date format
 import csv
 from datetime import datetime
 
-INPUT_CSV = "previousyear.csv"
-OUTPUT_CSV = "previousyear-fixed.csv"
+INPUT_CSV = "corrected_RawRiderHQData.csv"
+OUTPUT_CSV = "corrected_RawRiderHQData-fixed.csv"
 
 with open(INPUT_CSV, newline="", encoding="utf-8") as infile, \
      open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as outfile:
@@ -17,12 +17,12 @@ with open(INPUT_CSV, newline="", encoding="utf-8") as infile, \
     writer.writeheader()
 
     for row in reader:
-        dob = row.get("DOB", "")
+        dob = row.get("Date of birth", "")
         if dob:
             try:
                 dt = datetime.strptime(dob, "%d-%b-%y")
                 # month/day/year – no leading zeros
-                row["DOB"] = f"{dt.month}/{dt.day}/{dt.strftime('%y')}"
+                row["Date of birth"] = f"{dt.month}/{dt.day}/{dt.strftime('%y')}"
             except ValueError:
                 pass
 

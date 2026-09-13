@@ -9,23 +9,7 @@ Core rules you asked for:
        - Race No >= NONLEAGUE_THRESHOLD (default 900) are excluded completely.
   2) Re-ranking after filtering:
        - Overall position is re-ranked 1..N among LEAGUE riders.
-       - Category position is re-ranked 1..K among LEAGUE riders within each
-         *scoring group* (see "Scoring groups" below) — not necessarily the
-         same as the raw CSV/normalised category.
-  2a) Scoring groups (category merging for league tables):
-       - The CSV's "Category" column (via normalise_category()) can split riders
-         more finely than we want for league points, e.g. RaceTec reports
-         "Senior" and "Under 23" (U23) as separate categories with their own
-         category position, but WMCCL scores them together in one Senior/U23
-         league table. "Junior" and "M 40-49" remain their own scoring groups.
-       - SCORING_GROUPS below maps base categories onto the group used for
-         cat_rank / points. Riders keep their own base_cat for reference, but
-         Senior and U23 riders share one combined, re-ranked field: cat_rank
-         (and therefore points) is computed from their finishing order within
-         the merged Senior+U23 field, not from RaceTec's separate per-category
-         position.
-       - Override/extend via --merge-categories if grouping ever needs to
-         change (e.g. a future season merging M40 in with Senior too).
+       - Category position is re-ranked 1..K among LEAGUE riders within each category.
   3) Mixed gender races:
        - Some races have males + females in the same start but they are treated as
          effectively separate league races.
@@ -38,8 +22,7 @@ Core rules you asked for:
        - Men still get per-category ranks.
   5) Points:
        - Default scheme: 1st gets MAX_POINTS (default 100), then -1 per place, min 1.
-       - For normal men's-style: points based on category rank (i.e. rank
-         within the rider's *scoring group* — see "Scoring groups" above).
+       - For normal men's-style: points based on category rank.
        - For women single-table: points based on female overall rank.
   6) Upserts results:
        - Inserts/updates per (rider_id, round).
@@ -99,6 +82,10 @@ def safe_int(x, default=None):
         return default
 
 
+# Time field values that indicate a rider did not finish
+NON_FINISHER_STATUSES = {"dnf", "dns", "dsq", "dq", "otl", "did not finish",
+                          "did not start", "disqualified", "lapped"}
+
 def parse_time_seconds(s):
     """
     Parse 'HH:MM:SS' or 'MM:SS' into seconds. Returns None if blank/unparseable.
@@ -119,6 +106,17 @@ def parse_time_seconds(s):
         return float(parts[0])
     except ValueError:
         return None
+
+
+def is_non_finisher(time_str):
+    """
+    Return True if the Time field contains a DNF/DNS/DSQ marker rather than
+    an actual time. D3 RaceTec exports DNF riders with their position but
+    'DNF' in the Time column — we must exclude these from finishers.
+    """
+    if time_str is None:
+        return False
+    return str(time_str).strip().lower() in NON_FINISHER_STATUSES
 
 
 def normalise_gender(g):
@@ -183,70 +181,6 @@ def normalise_category(cat):
     return s
 
 
-# -----------------------------
-# Scoring groups (category merging for league points)
-# -----------------------------
-#
-# RaceTec/D3 reports a separate category position for "Senior" and "Under 23"
-# (U23), but WMCCL scores these two categories together as one field for the
-# league table. Junior and the M-age-band categories stay as their own,
-# separate scoring groups.
-#
-# Keys/values here are base categories as returned by normalise_category().
-# Any base category not listed here scores on its own (i.e. maps to itself).
-DEFAULT_SCORING_GROUPS = {
-    "Sen": "SenU23",
-    "U23": "SenU23",
-}
-
-
-def scoring_category(base_cat, scoring_groups=None):
-    """
-    Map a base category (from normalise_category()) onto the group used for
-    cat_rank / points ranking. Riders in the same scoring group are re-ranked
-    together, in finish order, regardless of their individual base_cat.
-
-    Categories not present in scoring_groups score on their own (unchanged).
-    """
-    groups = DEFAULT_SCORING_GROUPS if scoring_groups is None else scoring_groups
-    return groups.get(base_cat, base_cat)
-
-
-def parse_merge_categories(spec):
-    """
-    Parse a --merge-categories spec into a scoring_groups dict, overriding
-    DEFAULT_SCORING_GROUPS entirely (caller passes None to keep the default).
-
-    Format: "GroupName=Cat1,Cat2;GroupName2=Cat3,Cat4"
-    Example: "SenU23=Sen,U23;M40Plus=M40,M45"
-
-    Category names must match normalise_category() output (e.g. Sen, U23,
-    Jun, M40, M50, M60, M70).
-    """
-    if not spec:
-        return dict(DEFAULT_SCORING_GROUPS)
-
-    groups = {}
-    for chunk in spec.split(";"):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        if "=" not in chunk:
-            raise SystemExit(
-                f"❌ Invalid --merge-categories chunk '{chunk}'. "
-                f"Expected format GroupName=Cat1,Cat2"
-            )
-        group_name, cats_str = chunk.split("=", 1)
-        group_name = group_name.strip()
-        cats = [c.strip() for c in cats_str.split(",") if c.strip()]
-        if not group_name or not cats:
-            raise SystemExit(f"❌ Invalid --merge-categories chunk '{chunk}'.")
-        for c in cats:
-            groups[c] = group_name
-
-    return groups
-
-
 def compute_points(rank, max_points):
     """
     Points: max_points for 1st, then -1 per place, minimum 1.
@@ -269,7 +203,7 @@ def load_csv_rows(csv_path: Path):
     return rows, headers
 
 
-def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, scoring_groups=None):
+def rerank(rows, *, nonleague_threshold, split_genders, women_single_table):
     """
     Filter non-league and recompute ranks.
 
@@ -279,15 +213,9 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, scor
     Else:
       - compute one set of ranks over all riders (league-only)
 
-    Category (cat_rank) ranking is computed per *scoring group*, not per raw
-    base_cat — see scoring_category(). By default this merges Senior + U23
-    into one combined field for cat_rank/points purposes; Junior and the
-    M-age-band categories are unaffected. Each item's own base_cat is kept
-    for reference/debugging.
-
     Returns:
       processed: list[dict] with keys:
-        race_no, base_cat, scoring_cat, gender, csv_pos, time_sec, overall_rank, cat_rank
+        race_no, base_cat, gender, csv_pos, time_sec, overall_rank, cat_rank
       stats: dict
     """
     extracted = []
@@ -312,8 +240,14 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, scor
             stats["filtered_nonleague"] += 1
             continue
 
+        # Exclude DNF/DNS/DSQ — D3 exports these with a position but "DNF" in Time
+        raw_time = r.get("Time", "")
+        if is_non_finisher(raw_time):
+            stats["skipped_nonfinisher"] = stats.get("skipped_nonfinisher", 0) + 1
+            continue
+
         csv_pos = safe_int(r.get("Pos"))
-        time_sec = parse_time_seconds(r.get("Time"))
+        time_sec = parse_time_seconds(raw_time)
         if csv_pos is None and time_sec is None:
             stats["skipped_missing_ordering"] += 1
             continue
@@ -323,12 +257,10 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, scor
             stats["unknown_gender"] += 1
 
         base_cat = normalise_category(r.get("Category"))
-        scoring_cat = scoring_category(base_cat, scoring_groups)
 
         extracted.append({
             "race_no": race_no,
             "base_cat": base_cat,
-            "scoring_cat": scoring_cat,
             "gender": gender,
             "csv_pos": csv_pos,
             "time_sec": time_sec,
@@ -353,11 +285,10 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, scor
         for i, item in enumerate(extracted, start=1):
             item["overall_rank"] = i
 
-        # per-scoring-group rank (finish order) — this is what merges
-        # Senior + U23 into one combined, re-ranked field by default.
+        # per-category rank (finish order)
         counters = {}
         for item in extracted:
-            c = item["scoring_cat"]
+            c = item["base_cat"]
             counters[c] = counters.get(c, 0) + 1
             item["cat_rank"] = counters[c]
 
@@ -384,7 +315,7 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, scor
         else:
             counters = {}
             for item in group:
-                c = item["scoring_cat"]
+                c = item["base_cat"]
                 counters[c] = counters.get(c, 0) + 1
                 item["cat_rank"] = counters[c]
 
@@ -503,13 +434,6 @@ def main():
                     help="For female riders, use single table: cat_position == overall_position.")
     ap.add_argument("--max-points", type=int, default=100,
                     help="Points for 1st place (default 100)")
-    ap.add_argument("--merge-categories", default=None,
-                    help="Override which base categories score together for "
-                         "cat_rank/points. Format: 'Group=Cat1,Cat2;Group2=Cat3,Cat4' "
-                         "(category names match normalise_category() output, e.g. "
-                         "Sen, U23, Jun, M40, M50, M60, M70). "
-                         "Default merges Sen+U23 into one 'SenU23' scoring group; "
-                         "pass an empty string '' to disable all merging.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Do everything except write to DB")
     args = ap.parse_args()
@@ -532,22 +456,11 @@ def main():
             f"Headers were: {headers}"
         )
 
-    # None  -> use DEFAULT_SCORING_GROUPS (Sen+U23 merged)
-    # ""    -> explicitly disable merging (every base category scores on its own)
-    # "A=B" -> custom grouping
-    if args.merge_categories is None:
-        scoring_groups = dict(DEFAULT_SCORING_GROUPS)
-    elif args.merge_categories == "":
-        scoring_groups = {}
-    else:
-        scoring_groups = parse_merge_categories(args.merge_categories)
-
     processed, stats = rerank(
         rows,
         nonleague_threshold=args.nonleague_threshold,
         split_genders=args.split_genders,
-        women_single_table=args.women_single_table,
-        scoring_groups=scoring_groups,
+        women_single_table=args.women_single_table
     )
 
     print("\nCSV processing summary")
@@ -555,19 +468,12 @@ def main():
     print(f"  Filtered non-league (>= {args.nonleague_threshold})       : {stats['filtered_nonleague']}")
     print(f"  Skipped missing Race No               : {stats['skipped_missing_raceno']}")
     print(f"  Skipped missing Pos/Time              : {stats['skipped_missing_ordering']}")
+    print(f"  Skipped DNF/DNS/DSQ                   : {stats.get('skipped_nonfinisher', 0)}")
     print(f"  Unknown/blank gender rows             : {stats['unknown_gender']}")
     print(f"  League rows kept                      : {stats['kept_league']}")
     print(f"  Split genders                         : {args.split_genders}")
     print(f"  Women single table (female only)      : {args.women_single_table}")
     print(f"  Points scheme                         : {args.max_points} down to 1")
-    if scoring_groups:
-        merged_desc = "; ".join(
-            f"{group}=[{', '.join(sorted(c for c, g in scoring_groups.items() if g == group))}]"
-            for group in sorted(set(scoring_groups.values()))
-        )
-        print(f"  Merged scoring groups                 : {merged_desc}")
-    else:
-        print(f"  Merged scoring groups                 : (none — every category scores on its own)")
 
     db_stats = import_results(
         db_path,
@@ -590,7 +496,6 @@ def main():
             f"#{item['overall_rank']:>3}  "
             f"race_no={item['race_no']:<4}  "
             f"cat={item['base_cat']:<6}  "
-            f"scoring_grp={item['scoring_cat']:<8}  "
             f"cat_pos={item['cat_rank']:<3}  "
             f"csv_pos={item['csv_pos']}"
         )
@@ -600,3 +505,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

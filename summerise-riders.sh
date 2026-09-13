@@ -17,7 +17,6 @@ if [ ! -f $inputfile ] ; then
 fi
 
 Women=`egrep "^Senior/Masters Female|^Junior Female" $inputfile | wc -l`
-U6=`egrep "^Under 6" $inputfile | wc -l`
 U8=`egrep "^Under 8" $inputfile | wc -l`
 U10=`egrep "^Under 10" $inputfile | wc -l`
 U12=`egrep "^Under 12" $inputfile | wc -l`
@@ -31,8 +30,7 @@ Total=$((Total-1)) # Remove header!
 echo Race Summary - Categories unverified
 echo ============
 echo
-echo U6 riders  : $U6
-echo U8 riders  : $U8
+echo U6/U8 riders  : $U8
 echo U10 riders : $U10
 echo U12 riders : $U12
 echo Youth riders : $Youth
