@@ -36,7 +36,7 @@ RACE_DATABASES = [
 ]
 
 MAX_ROUNDS = 12   # change any season
-BEST_N = 10       # best-X rule - shoudl probably change this each year!
+BEST_N = 10       # best-X rule
 
 # ---------------------------------------------------------------------------
 
@@ -76,6 +76,9 @@ def create_core_tables(conn):
             is_ap INTEGER DEFAULT 0,
             status TEXT DEFAULT 'FIN',
             notes TEXT,
+
+            laps_completed INTEGER,       -- NEW: from D3 'Laps' column
+            finish_time_seconds REAL,     -- NEW: from D3 'Time' column, parsed to seconds (NULL for DNF)
 
             UNIQUE(rider_id, round),
             FOREIGN KEY(rider_id) REFERENCES riders(id)
@@ -169,4 +172,3 @@ def main():
 if __name__ == "__main__":
     from pathlib import Path
     main()
-

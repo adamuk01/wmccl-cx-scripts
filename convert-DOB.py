@@ -6,8 +6,8 @@ Used after exporting data form previous year and neet to match new date format
 import csv
 from datetime import datetime
 
-INPUT_CSV = "corrected_RawRiderHQData.csv"
-OUTPUT_CSV = "corrected_RawRiderHQData-fixed.csv"
+INPUT_CSV = "aidan.csv"
+OUTPUT_CSV = "corrected_aidan.csv"
 
 with open(INPUT_CSV, newline="", encoding="utf-8") as infile, \
      open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as outfile:

@@ -25,6 +25,14 @@ if ! [[ "$ROUND" =~ ^[0-9]+$ ]] || (( ROUND < 1 || ROUND > 12 )); then
   exit 1
 fi
 
+
+for f in Masters-results.csv  Seniors-results.csv  U10-results.csv  U12-results.csv  U8-results.csv  Women-results.csv  Youth-results.csv
+do
+	if [ ! -f $f ] ; then echo "File $f missing!"
+		exit 5
+	fi
+done
+
 # Helper: check files
 require_file() {
   local f="$1"
@@ -54,7 +62,7 @@ TASKS=(
   "Youth race update|Youth.db|Youth-results.csv|--split-genders"
   "Womens race update|Women.db|Women-results.csv|--women-single-table"
   "Masters race update|Masters.db|Masters-results.csv|"
-  "Senior race update|Seniors.db|Seniors-results.csv|"
+  "Senior race update|Seniors.db|Seniors-results.csv|--merge-categories"
 )
 
 for t in "${TASKS[@]}"; do

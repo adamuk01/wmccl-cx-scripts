@@ -14,11 +14,21 @@ AP IMPLEMENTATION:
   - points = 999
   - is_ap  = 1
   - status = 'AP'
+  - notes  = --reason value if given (e.g. 'volunteer'), else unchanged
 
 CLEAR AP:
   - points = NULL
   - is_ap  = 0
   - status = 'FIN'
+  - notes  = NULL (any prior reason no longer applies)
+
+REASON TAGGING:
+  - --reason is optional and free-text, but the badges/rider-pages work
+    specifically looks for --reason volunteer to credit a rider with
+    having given up their race to help run the event that round.
+  - AP given for other purposes (e.g. Regional Champs starting bonus)
+    should be left with no --reason, so it is never mistaken for a
+    volunteer credit.
 
 Safe to re-run (UPSERT on rider_id + round).
 """
@@ -44,6 +54,11 @@ def main():
     ap.add_argument("--round", type=int, required=True, help="Round number (e.g. 11)")
     ap.add_argument("--race-number", type=int, required=True, help="League rider number")
     ap.add_argument("--clear", action="store_true", help="Clear AP instead of setting it")
+    ap.add_argument("--reason", default=None,
+                    help="Optional tag stored in results.notes (e.g. 'volunteer'). "
+                         "Use --reason volunteer for riders who gave up their race "
+                         "to help run the event -- other AP uses (e.g. Regional "
+                         "Champs) should leave this unset. Ignored with --clear.")
     ap.add_argument("--dry-run", action="store_true", help="Show what would happen but don't write changes")
     ap.add_argument("--no-prompt", action="store_true",
                     help="Do not prompt for confirmation (batch mode)")
@@ -82,7 +97,7 @@ def main():
 
     # Existing result (if any)
     cur.execute("""
-        SELECT points, is_ap, status
+        SELECT points, is_ap, status, notes
         FROM results
         WHERE rider_id = ? AND round = ?
     """, (rider_id, args.round))
@@ -92,11 +107,13 @@ def main():
         new_points = None
         new_is_ap = 0
         new_status = "FIN"
+        new_notes = None
         action = "CLEAR AP"
     else:
         new_points = AP_POINTS_MARKER
         new_is_ap = 1
         new_status = "AP"
+        new_notes = args.reason
         action = "SET AP"
 
     print(f"\n{action}")
@@ -107,12 +124,12 @@ def main():
         print(f"  Club      : {club}")
 
     if existing:
-        old_points, old_is_ap, old_status = existing
-        print(f"  Existing  : points={old_points}, is_ap={old_is_ap}, status={old_status}")
+        old_points, old_is_ap, old_status, old_notes = existing
+        print(f"  Existing  : points={old_points}, is_ap={old_is_ap}, status={old_status}, notes={old_notes}")
     else:
         print("  Existing  : <no result row>")
 
-    print(f"  New       : points={new_points}, is_ap={new_is_ap}, status={new_status}")
+    print(f"  New       : points={new_points}, is_ap={new_is_ap}, status={new_status}, notes={new_notes}")
 
     # Confirmation
     if not args.no_prompt:
@@ -130,14 +147,15 @@ def main():
     # Upsert
     cur.execute(
         """
-        INSERT INTO results (rider_id, round, cat_position, overall_position, points, is_ap, status)
-        VALUES (?, ?, NULL, NULL, ?, ?, ?)
+        INSERT INTO results (rider_id, round, cat_position, overall_position, points, is_ap, status, notes)
+        VALUES (?, ?, NULL, NULL, ?, ?, ?, ?)
         ON CONFLICT(rider_id, round) DO UPDATE SET
             points = excluded.points,
             is_ap  = excluded.is_ap,
-            status = excluded.status
+            status = excluded.status,
+            notes  = excluded.notes
         """,
-        (rider_id, args.round, new_points, new_is_ap, new_status)
+        (rider_id, args.round, new_points, new_is_ap, new_status, new_notes)
     )
 
     conn.commit()
@@ -147,4 +165,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

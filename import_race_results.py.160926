@@ -9,7 +9,23 @@ Core rules you asked for:
        - Race No >= NONLEAGUE_THRESHOLD (default 900) are excluded completely.
   2) Re-ranking after filtering:
        - Overall position is re-ranked 1..N among LEAGUE riders.
-       - Category position is re-ranked 1..K among LEAGUE riders within each category.
+       - Category position is re-ranked 1..K among LEAGUE riders within each
+         *scoring group* (see "Scoring groups" below) — not necessarily the
+         same as the raw CSV/normalised category.
+  2a) Scoring groups (category merging for league tables):
+       - The CSV's "Category" column (via normalise_category()) can split riders
+         more finely than we want for league points, e.g. RaceTec reports
+         "Senior" and "Under 23" (U23) as separate categories with their own
+         category position, but WMCCL scores them together in one Senior/U23
+         league table. "Junior" and "M 40-49" remain their own scoring groups.
+       - SCORING_GROUPS below maps base categories onto the group used for
+         cat_rank / points. Riders keep their own base_cat for reference, but
+         Senior and U23 riders share one combined, re-ranked field: cat_rank
+         (and therefore points) is computed from their finishing order within
+         the merged Senior+U23 field, not from RaceTec's separate per-category
+         position.
+       - Override/extend via --merge-categories if grouping ever needs to
+         change (e.g. a future season merging M40 in with Senior too).
   3) Mixed gender races:
        - Some races have males + females in the same start but they are treated as
          effectively separate league races.
@@ -20,36 +36,21 @@ Core rules you asked for:
        - Use --women-single-table to set female cat_position == female overall_position
          and points based on female overall position.
        - Men still get per-category ranks.
-  4b) Seniors category merging:
-       - Senior and Under-23 riders share a start but score together as ONE
-         combined "Seniors" scoring group (cat_position/points computed
-         across both). Junior and M40-49 riders, who also share that start,
-         score independently and are NOT merged.
-       - Use --merge-categories to enable this grouping. Without the flag,
-         Sen and U23 are ranked as separate categories (the old, incorrect
-         behaviour for Seniors.db).
   5) Points:
        - Default scheme: 1st gets MAX_POINTS (default 100), then -1 per place, min 1.
-       - For normal men's-style: points based on category rank.
+       - For normal men's-style: points based on category rank (i.e. rank
+         within the rider's *scoring group* — see "Scoring groups" above).
        - For women single-table: points based on female overall rank.
   6) Upserts results:
        - Inserts/updates per (rider_id, round).
-  7) DNF handling:
-       - D3 flags a DNF by putting the literal text "DNF" in the "Time" column
-         (the "Pos" column is still populated in these rows — it is NOT a
-         reliable signal of whether a rider finished).
-       - DNF rows are excluded from re-ranking, points and overall/cat position
-         entirely, and are upserted with status='DNF', cat_position=NULL,
-         overall_position=NULL, points=NULL.
 
 Expected CSV columns (from your Seniors-results.csv sample):
   - "Pos"
   - "Race No"
   - "Time"
-  - "Laps"
   - "Category"
   - "Gender"
-  - (we ignore the rest, e.g. "Name", "Cat Pos", "Gen Pos", "Club", "Lap1"...)
+  - (we ignore the rest)
 
 DB assumptions:
   - riders table has: id, race_number, firstname, surname, ...
@@ -61,11 +62,7 @@ DB assumptions:
         points INTEGER,
         is_ap INTEGER,
         status TEXT,
-        laps_completed INTEGER,
-        finish_time_seconds REAL,
         UNIQUE(rider_id, round)
-    If laps_completed / finish_time_seconds are missing (an older DB from
-    before this feature), run migrate_add_time_laps.py against it first.
 
 Usage examples:
   # Men's-style (multi-category), not mixed genders:
@@ -122,17 +119,6 @@ def parse_time_seconds(s):
         return float(parts[0])
     except ValueError:
         return None
-
-
-def is_dnf(time_value):
-    """
-    D3 RaceTec flags a DNF by putting the literal text 'DNF' in the Time
-    column. The Pos column is still populated on these rows, so Pos alone
-    is NOT a safe way to detect a DNF -- always check Time first.
-    """
-    if time_value is None:
-        return False
-    return str(time_value).strip().upper() == "DNF"
 
 
 def normalise_gender(g):
@@ -197,23 +183,68 @@ def normalise_category(cat):
     return s
 
 
-def scoring_category(base_cat, merge_categories):
-    """
-    Returns the category used for GROUPING when computing cat_rank/points
-    within a race. This is separate from a rider's stored race_category
-    (in the riders table) -- it only affects how results.py's ranking
-    counters group riders together for THIS import.
+# -----------------------------
+# Scoring groups (category merging for league points)
+# -----------------------------
+#
+# RaceTec/D3 reports a separate category position for "Senior" and "Under 23"
+# (U23), but WMCCL scores these two categories together as one field for the
+# league table. Junior and the M-age-band categories stay as their own,
+# separate scoring groups.
+#
+# Keys/values here are base categories as returned by normalise_category().
+# Any base category not listed here scores on its own (i.e. maps to itself).
+DEFAULT_SCORING_GROUPS = {
+    "Sen": "SenU23",
+    "U23": "SenU23",
+}
 
-    With merge_categories=True:
-      - 'Sen' and 'U23' score together as one combined group.
-      - Everything else (e.g. 'Jun', 'M40', 'M50'...) stays independent --
-        the league only merges Seniors with Under 23s, not Juniors or
-        Masters, even though they may share the same start.
-    With merge_categories=False: behaves exactly as base_cat (no merging).
+
+def scoring_category(base_cat, scoring_groups=None):
     """
-    if merge_categories and base_cat in ("Sen", "U23"):
-        return "SenU23"
-    return base_cat
+    Map a base category (from normalise_category()) onto the group used for
+    cat_rank / points ranking. Riders in the same scoring group are re-ranked
+    together, in finish order, regardless of their individual base_cat.
+
+    Categories not present in scoring_groups score on their own (unchanged).
+    """
+    groups = DEFAULT_SCORING_GROUPS if scoring_groups is None else scoring_groups
+    return groups.get(base_cat, base_cat)
+
+
+def parse_merge_categories(spec):
+    """
+    Parse a --merge-categories spec into a scoring_groups dict, overriding
+    DEFAULT_SCORING_GROUPS entirely (caller passes None to keep the default).
+
+    Format: "GroupName=Cat1,Cat2;GroupName2=Cat3,Cat4"
+    Example: "SenU23=Sen,U23;M40Plus=M40,M45"
+
+    Category names must match normalise_category() output (e.g. Sen, U23,
+    Jun, M40, M50, M60, M70).
+    """
+    if not spec:
+        return dict(DEFAULT_SCORING_GROUPS)
+
+    groups = {}
+    for chunk in spec.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            raise SystemExit(
+                f"❌ Invalid --merge-categories chunk '{chunk}'. "
+                f"Expected format GroupName=Cat1,Cat2"
+            )
+        group_name, cats_str = chunk.split("=", 1)
+        group_name = group_name.strip()
+        cats = [c.strip() for c in cats_str.split(",") if c.strip()]
+        if not group_name or not cats:
+            raise SystemExit(f"❌ Invalid --merge-categories chunk '{chunk}'.")
+        for c in cats:
+            groups[c] = group_name
+
+    return groups
 
 
 def compute_points(rank, max_points):
@@ -238,7 +269,7 @@ def load_csv_rows(csv_path: Path):
     return rows, headers
 
 
-def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, merge_categories=False):
+def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, scoring_groups=None):
     """
     Filter non-league and recompute ranks.
 
@@ -248,16 +279,18 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, merg
     Else:
       - compute one set of ranks over all riders (league-only)
 
+    Category (cat_rank) ranking is computed per *scoring group*, not per raw
+    base_cat — see scoring_category(). By default this merges Senior + U23
+    into one combined field for cat_rank/points purposes; Junior and the
+    M-age-band categories are unaffected. Each item's own base_cat is kept
+    for reference/debugging.
+
     Returns:
       processed: list[dict] with keys:
-        race_no, base_cat, gender, csv_pos, time_sec, overall_rank, cat_rank
-      dnf_rows: list[dict] with keys:
-        race_no, base_cat, gender
-        (league riders who DNF'd -- excluded from ranking/points entirely)
+        race_no, base_cat, scoring_cat, gender, csv_pos, time_sec, overall_rank, cat_rank
       stats: dict
     """
     extracted = []
-    dnf_rows = []
     stats = {
         "input_rows": 0,
         "kept_league": 0,
@@ -265,7 +298,6 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, merg
         "skipped_missing_raceno": 0,
         "skipped_missing_ordering": 0,
         "unknown_gender": 0,
-        "dnf": 0,
     }
 
     for r in rows:
@@ -280,40 +312,26 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, merg
             stats["filtered_nonleague"] += 1
             continue
 
+        csv_pos = safe_int(r.get("Pos"))
+        time_sec = parse_time_seconds(r.get("Time"))
+        if csv_pos is None and time_sec is None:
+            stats["skipped_missing_ordering"] += 1
+            continue
+
         gender = normalise_gender(r.get("Gender"))
         if gender == "?":
             stats["unknown_gender"] += 1
 
         base_cat = normalise_category(r.get("Category"))
-
-        raw_time = r.get("Time")
-        laps = safe_int(r.get("Laps"))
-
-        if is_dnf(raw_time):
-            # Check Time BEFORE Pos -- D3 still populates Pos for DNF rows,
-            # so Pos presence must never be used to infer "finished".
-            stats["dnf"] += 1
-            dnf_rows.append({
-                "race_no": race_no,
-                "base_cat": base_cat,
-                "gender": gender,
-                "laps": laps,
-            })
-            continue
-
-        csv_pos = safe_int(r.get("Pos"))
-        time_sec = parse_time_seconds(raw_time)
-        if csv_pos is None and time_sec is None:
-            stats["skipped_missing_ordering"] += 1
-            continue
+        scoring_cat = scoring_category(base_cat, scoring_groups)
 
         extracted.append({
             "race_no": race_no,
             "base_cat": base_cat,
+            "scoring_cat": scoring_cat,
             "gender": gender,
             "csv_pos": csv_pos,
             "time_sec": time_sec,
-            "laps": laps,
         })
 
     # stable finish-order key:
@@ -335,19 +353,16 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, merg
         for i, item in enumerate(extracted, start=1):
             item["overall_rank"] = i
 
-        # per-category rank (finish order)
-        # merge_categories groups Sen+U23 together for ranking purposes --
-        # scoring_category() is the ONLY place that decides the grouping;
-        # base_cat itself (and anything stored in the riders table) is
-        # untouched.
+        # per-scoring-group rank (finish order) — this is what merges
+        # Senior + U23 into one combined, re-ranked field by default.
         counters = {}
         for item in extracted:
-            c = scoring_category(item["base_cat"], merge_categories)
+            c = item["scoring_cat"]
             counters[c] = counters.get(c, 0) + 1
             item["cat_rank"] = counters[c]
 
         stats["kept_league"] = len(extracted)
-        return extracted, dnf_rows, stats
+        return extracted, stats
 
     # split genders: rank separately for M and F (and ? if present)
     processed = []
@@ -369,7 +384,7 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, merg
         else:
             counters = {}
             for item in group:
-                c = scoring_category(item["base_cat"], merge_categories)
+                c = item["scoring_cat"]
                 counters[c] = counters.get(c, 0) + 1
                 item["cat_rank"] = counters[c]
 
@@ -378,14 +393,14 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, merg
     # Sort for readable sample output: by gender then rank
     processed.sort(key=lambda x: (x["gender"], x["overall_rank"]))
     stats["kept_league"] = len(processed)
-    return processed, dnf_rows, stats
+    return processed, stats
 
 
 # -----------------------------
 # DB import
 # -----------------------------
 
-def import_results(db_path: Path, round_no: int, processed, dnf_rows, *,
+def import_results(db_path: Path, round_no: int, processed, *,
                    women_single_table: bool,
                    max_points: int,
                    dry_run: bool):
@@ -395,9 +410,6 @@ def import_results(db_path: Path, round_no: int, processed, dnf_rows, *,
     points:
       - if women_single_table and rider is F -> based on overall_rank
       - else -> based on cat_rank
-
-    DNF rows are upserted separately with status='DNF' and NULL
-    cat_position/overall_position/points -- they never enter ranking.
     """
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA foreign_keys = ON")
@@ -419,16 +431,6 @@ def import_results(db_path: Path, round_no: int, processed, dnf_rows, *,
     if not cur.fetchone():
         conn.close()
         raise SystemExit("❌ DB missing 'results' table")
-
-    cur.execute("PRAGMA table_info(results)")
-    results_cols = {row[1] for row in cur.fetchall()}
-    missing_time_cols = {"laps_completed", "finish_time_seconds"} - results_cols
-    if missing_time_cols:
-        conn.close()
-        raise SystemExit(
-            f"❌ 'results' table is missing {sorted(missing_time_cols)}.\n"
-            f"   Run migrate_add_time_laps.py --db {db_path.name} first."
-        )
 
     upserted = 0
     not_found = 0
@@ -457,54 +459,19 @@ def import_results(db_path: Path, round_no: int, processed, dnf_rows, *,
         if not dry_run:
             cur.execute(
                 """
-                INSERT INTO results (rider_id, round, cat_position, overall_position, points, is_ap, status, laps_completed, finish_time_seconds)
-                VALUES (?, ?, ?, ?, ?, 0, 'FIN', ?, ?)
+                INSERT INTO results (rider_id, round, cat_position, overall_position, points, is_ap, status)
+                VALUES (?, ?, ?, ?, ?, 0, 'FIN')
                 ON CONFLICT(rider_id, round) DO UPDATE SET
-                    cat_position         = excluded.cat_position,
-                    overall_position     = excluded.overall_position,
-                    points               = excluded.points,
-                    is_ap                = excluded.is_ap,
-                    status               = excluded.status,
-                    laps_completed       = excluded.laps_completed,
-                    finish_time_seconds  = excluded.finish_time_seconds
+                    cat_position     = excluded.cat_position,
+                    overall_position = excluded.overall_position,
+                    points           = excluded.points,
+                    is_ap            = excluded.is_ap,
+                    status           = excluded.status
                 """,
-                (rider_id, round_no, cat_position, overall_position, points,
-                 item.get("laps"), item.get("time_sec"))
+                (rider_id, round_no, cat_position, overall_position, points)
             )
 
         upserted += 1
-
-    dnf_upserted = 0
-    dnf_not_found = 0
-
-    for item in dnf_rows:
-        race_no = item["race_no"]
-
-        cur.execute("SELECT id FROM riders WHERE race_number = ?", (race_no,))
-        rr = cur.fetchone()
-        if not rr:
-            dnf_not_found += 1
-            continue
-        rider_id = rr[0]
-
-        if not dry_run:
-            cur.execute(
-                """
-                INSERT INTO results (rider_id, round, cat_position, overall_position, points, is_ap, status, laps_completed, finish_time_seconds)
-                VALUES (?, ?, NULL, NULL, NULL, 0, 'DNF', ?, NULL)
-                ON CONFLICT(rider_id, round) DO UPDATE SET
-                    cat_position         = excluded.cat_position,
-                    overall_position     = excluded.overall_position,
-                    points               = excluded.points,
-                    is_ap                = excluded.is_ap,
-                    status               = excluded.status,
-                    laps_completed       = excluded.laps_completed,
-                    finish_time_seconds  = excluded.finish_time_seconds
-                """,
-                (rider_id, round_no, item.get("laps"))
-            )
-
-        dnf_upserted += 1
 
     if dry_run:
         conn.rollback()
@@ -516,8 +483,6 @@ def import_results(db_path: Path, round_no: int, processed, dnf_rows, *,
     return {
         "results_upserted": upserted,
         "riders_not_found": not_found,
-        "dnf_upserted": dnf_upserted,
-        "dnf_riders_not_found": dnf_not_found,
     }
 
 
@@ -536,13 +501,15 @@ def main():
                     help="Treat M and F as separate league tables (rerank separately).")
     ap.add_argument("--women-single-table", action="store_true",
                     help="For female riders, use single table: cat_position == overall_position.")
-    ap.add_argument("--merge-categories", action="store_true",
-                    help="Merge Senior and Under-23 riders into one combined scoring group "
-                         "('SenU23') for cat_position/points, since they share a start but "
-                         "score together as one Seniors league table. Junior and M40-49 riders "
-                         "are unaffected and still score independently.")
     ap.add_argument("--max-points", type=int, default=100,
                     help="Points for 1st place (default 100)")
+    ap.add_argument("--merge-categories", default=None,
+                    help="Override which base categories score together for "
+                         "cat_rank/points. Format: 'Group=Cat1,Cat2;Group2=Cat3,Cat4' "
+                         "(category names match normalise_category() output, e.g. "
+                         "Sen, U23, Jun, M40, M50, M60, M70). "
+                         "Default merges Sen+U23 into one 'SenU23' scoring group; "
+                         "pass an empty string '' to disable all merging.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Do everything except write to DB")
     args = ap.parse_args()
@@ -557,7 +524,7 @@ def main():
 
     rows, headers = load_csv_rows(csv_path)
 
-    required_cols = {"Race No", "Category", "Pos", "Gender", "Laps", "Time"}
+    required_cols = {"Race No", "Category", "Pos", "Gender"}
     missing = required_cols - set(headers)
     if missing:
         raise SystemExit(
@@ -565,12 +532,22 @@ def main():
             f"Headers were: {headers}"
         )
 
-    processed, dnf_rows, stats = rerank(
+    # None  -> use DEFAULT_SCORING_GROUPS (Sen+U23 merged)
+    # ""    -> explicitly disable merging (every base category scores on its own)
+    # "A=B" -> custom grouping
+    if args.merge_categories is None:
+        scoring_groups = dict(DEFAULT_SCORING_GROUPS)
+    elif args.merge_categories == "":
+        scoring_groups = {}
+    else:
+        scoring_groups = parse_merge_categories(args.merge_categories)
+
+    processed, stats = rerank(
         rows,
         nonleague_threshold=args.nonleague_threshold,
         split_genders=args.split_genders,
         women_single_table=args.women_single_table,
-        merge_categories=args.merge_categories
+        scoring_groups=scoring_groups,
     )
 
     print("\nCSV processing summary")
@@ -579,18 +556,23 @@ def main():
     print(f"  Skipped missing Race No               : {stats['skipped_missing_raceno']}")
     print(f"  Skipped missing Pos/Time              : {stats['skipped_missing_ordering']}")
     print(f"  Unknown/blank gender rows             : {stats['unknown_gender']}")
-    print(f"  DNF rows (excluded from ranking)      : {stats['dnf']}")
     print(f"  League rows kept                      : {stats['kept_league']}")
     print(f"  Split genders                         : {args.split_genders}")
     print(f"  Women single table (female only)      : {args.women_single_table}")
-    print(f"  Merge Sen+U23 into one scoring group   : {args.merge_categories}")
     print(f"  Points scheme                         : {args.max_points} down to 1")
+    if scoring_groups:
+        merged_desc = "; ".join(
+            f"{group}=[{', '.join(sorted(c for c, g in scoring_groups.items() if g == group))}]"
+            for group in sorted(set(scoring_groups.values()))
+        )
+        print(f"  Merged scoring groups                 : {merged_desc}")
+    else:
+        print(f"  Merged scoring groups                 : (none — every category scores on its own)")
 
     db_stats = import_results(
         db_path,
         args.round,
         processed,
-        dnf_rows,
         women_single_table=args.women_single_table,
         max_points=args.max_points,
         dry_run=args.dry_run
@@ -599,8 +581,6 @@ def main():
     print("\nDB import summary")
     print(f"  Results upserted                      : {db_stats['results_upserted']}")
     print(f"  Riders not found in DB (race_number)  : {db_stats['riders_not_found']}")
-    print(f"  DNF rows upserted (status='DNF')      : {db_stats['dnf_upserted']}")
-    print(f"  DNF riders not found in DB            : {db_stats['dnf_riders_not_found']}")
     print(f"  Dry-run                               : {args.dry_run}")
 
     print("\nSample (first 12 after rerank):")
@@ -610,6 +590,7 @@ def main():
             f"#{item['overall_rank']:>3}  "
             f"race_no={item['race_no']:<4}  "
             f"cat={item['base_cat']:<6}  "
+            f"scoring_grp={item['scoring_cat']:<8}  "
             f"cat_pos={item['cat_rank']:<3}  "
             f"csv_pos={item['csv_pos']}"
         )
