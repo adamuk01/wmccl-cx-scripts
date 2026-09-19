@@ -49,11 +49,53 @@ BADGES / STATS (all computed from data already in the DB):
       a caveat if the rider's category has changed between seasons
       (since a category change can shift the comparison group).
 
+PACE GRADE (2026-09-19, leader scoping revised twice same day):
+    A parkrun-age-grade-style "how did I do?" percentage, computed and
+    documented in pace_grade_scoring.py (read that module's docstring
+    for the full reasoning — the short version: it's a rider's pace
+    (seconds per lap) compared to the fastest pace ridden in their PACE
+    GROUP that round, so the fastest rider in that group is always 100%
+    and everyone else's grade is fair regardless of how many laps they
+    personally completed, which matters here because WMCCL rounds run to
+    a time cutoff rather than a fixed distance).
+
+    IMPORTANT: a "pace group" is USUALLY just the rider's own
+    race_category, but not always — see PACE_GROUP_OVERRIDES in
+    pace_grade_scoring.py. Seniors.db, Masters.db and Women.db each merge
+    several race_category values into shared groups because Adam
+    confirmed those riders genuinely share a start line, even though a
+    couple of them (U8.db, Youth.db) that superficially look similar do
+    NOT merge, because there Adam confirmed the opposite — separate
+    starts entirely. Don't "simplify" this to either a single per-DB/
+    round leader OR a strict one-group-per-race_category rule; both were
+    tried, both produced wrong grades for some DB, and pace_grade_
+    scoring.py's "WHO COUNTS AS THE LEADER" section documents both
+    failures so a future change doesn't repeat either one.
+
+    Shown three ways on a rider's page:
+        - A "Pace grade" column in the results table (round-by-round),
+          "—" for any round with no grade (DNF / AP / not yet raced).
+        - A "Pace grade (season avg)" stat tile, mean of graded rounds.
+        - A one-line season trend (early-season vs. recent-season
+          average), only shown once a rider has at least 4 graded
+          rounds — fewer than that and an early/late split is just
+          noise. Framed positively in all three directions (up/down/
+          steady): see render_pace_trend_block().
+    The round with a rider's single best Pace Grade is tagged "⚡ Best
+    pace" in the table — independent of, and possibly a different
+    round from, the existing "★ Season best" points tag.
+
+    Rider-facing explanation of all this lives in
+    pace-grade-explainer.html (a WordPress-paste-in snippet, not linked
+    from this page's HTML — the league site links to it from wherever
+    makes sense alongside the results pages).
+
 WHAT COUNTS AS A "REAL" RESULT:
     AP (average points) rows and DNF rows are excluded from points/
     position/medal/milestone calculations. DNF rows DO still count
     towards laps completed (they rode them) but not towards
-    total race time (no reliable finish time exists for a DNF).
+    total race time (no reliable finish time exists for a DNF). Pace
+    Grade follows the same rule (see above).
 
 ROUND NAMES / VENUES:
     --rounds-file takes the SAME CSV used to populate each DB's `rounds`
@@ -125,9 +167,21 @@ import sqlite3
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from pace_grade_scoring import (
+    compute_round_leader_paces,
+    compute_rider_pace_grades,
+    pace_grade_trend,
+)
+
 
 AP_MARKER = 999
 MILESTONE_THRESHOLDS = [5, 10]  # "Full House" is handled separately, at season_length
+
+# Trend line only shown once a rider has at least this many graded
+# rounds — fewer than that and an early/late split is just noise. Kept
+# here (not in pace_grade_scoring.py) since it's a presentation choice
+# for THIS page, not part of the grading formula itself.
+PACE_TREND_MIN_ROUNDS = 4
 
 # Optional per-round ground/weather conditions ("bit of fun") shown as a
 # small icon against each round in a rider's results table — one value
@@ -231,6 +285,13 @@ def format_duration(total_seconds: Optional[float]) -> str:
     if m:
         return f"{m}m {s}s"
     return f"{s}s"
+
+
+def format_pct(value: Optional[float]) -> str:
+    """Whole-number percentage for a Pace Grade value, '—' if ungraded."""
+    if value is None:
+        return "—"
+    return f"{value:.0f}%"
 
 
 # ---------------------------------------------------------------------------
@@ -391,13 +452,19 @@ MEDAL_LABELS = {1: "1st", 2: "2nd", 3: "3rd"}
 MEDAL_CLASSES = {1: "gold", 2: "silver", 3: "bronze"}
 
 
-def compute_stats(history: List[Tuple], *, season_length: int,
+def compute_stats(history: List[Tuple], pace_grades: Dict[int, Optional[float]], *,
+                  season_length: int,
                   race_category: Optional[str],
                   race_category_previous_year: Optional[str],
                   average_points_last_year: Optional[float]) -> Dict[str, object]:
     """
     history rows: (round, cat_position, overall_position, points, is_ap,
                     status, laps_completed, finish_time_seconds)
+
+    pace_grades: {round_number: grade_percent_or_None}, from
+    pace_grade_scoring.compute_rider_pace_grades() — passed in rather
+    than recomputed here so the table cells and these stats can never
+    disagree.
 
     Medals always key off cat_position (category position) for every
     category, including Women's — overall_position is used elsewhere
@@ -411,6 +478,10 @@ def compute_stats(history: List[Tuple], *, season_length: int,
     total_laps = 0
     total_time_seconds = 0.0
     medal_rounds = {}  # round -> 1/2/3
+
+    best_pace_grade = None
+    best_pace_round = None
+    graded_rounds: List[Tuple[int, float]] = []
 
     for rnd, cat_pos, overall_pos, points, is_ap, status, laps, time_sec in history:
         is_real = (status == "FIN") and not is_ap and points != AP_MARKER
@@ -439,7 +510,21 @@ def compute_stats(history: List[Tuple], *, season_length: int,
             if time_sec is not None:
                 total_time_seconds += time_sec
 
+        grade = pace_grades.get(rnd)
+        if grade is not None:
+            graded_rounds.append((rnd, grade))
+            if best_pace_grade is None or grade > best_pace_grade:
+                best_pace_grade = grade
+                best_pace_round = rnd
+
     avg_points = (sum(real_points) / len(real_points)) if real_points else None
+    avg_pace_grade = (
+        sum(g for _, g in graded_rounds) / len(graded_rounds) if graded_rounds else None
+    )
+
+    trend = None
+    if len(graded_rounds) >= PACE_TREND_MIN_ROUNDS:
+        trend = pace_grade_trend(graded_rounds)
 
     # Milestone badge: highest threshold reached, "Full House" beats
     # the numeric thresholds if the season is complete for this rider.
@@ -470,6 +555,11 @@ def compute_stats(history: List[Tuple], *, season_length: int,
         "is_newbie": is_newbie,
         "category_changed": category_changed,
         "avg_points_last_year": average_points_last_year,
+        "avg_pace_grade": avg_pace_grade,
+        "best_pace_grade": best_pace_grade,
+        "best_pace_round": best_pace_round,
+        "graded_rounds_count": len(graded_rounds),
+        "pace_trend": trend,
     }
 
 
@@ -551,8 +641,13 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   .wmccl-rider .cond {{ font-size: 1.1rem; cursor: default; }}
   .wmccl-rider tr.best-round {{ background: #fff8e1; }}
   .wmccl-rider .best-tag {{ margin-left: 0.4rem; font-size: 0.75rem; color: #8a6d00; font-weight: 600; }}
+  .wmccl-rider .pace-best-tag {{ margin-left: 0.4rem; font-size: 0.75rem; color: #1f7a1f; font-weight: 600; }}
   .wmccl-rider .compare {{ margin: 0.5rem 0 1.25rem; font-size: 0.9rem; color: #444; }}
   .wmccl-rider .compare .note {{ display: block; font-size: 0.8rem; color: #888; margin-top: 0.2rem; }}
+  .wmccl-rider .pace-trend {{ margin: 0.5rem 0 1.25rem; font-size: 0.9rem; padding: 0.5rem 0.8rem; border-radius: 6px; }}
+  .wmccl-rider .pace-trend.up {{ background: #eafbea; color: #1f7a1f; }}
+  .wmccl-rider .pace-trend.steady {{ background: #f0f4ff; color: #1f4e79; }}
+  .wmccl-rider .pace-trend.down {{ background: #f5f5f5; color: #555; }}
   .wmccl-rider .team-links {{ margin: 0 0 1.25rem; font-size: 0.9rem; color: #444; }}
   .wmccl-rider .team-links a {{ margin-right: 0.75rem; }}
 </style>
@@ -571,17 +666,20 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
     <div class="stat"><span class="label">Best cat. finish</span><span class="value">{best_cat_position}</span></div>
     <div class="stat"><span class="label">Best points</span><span class="value">{best_points}</span></div>
     <div class="stat"><span class="label">Season average</span><span class="value">{avg_points}</span></div>
+    <div class="stat"><span class="label">Pace grade (season avg)</span><span class="value">{avg_pace_grade}</span></div>
     <div class="stat"><span class="label">Laps completed</span><span class="value">{total_laps}</span></div>
     <div class="stat"><span class="label">Time in the saddle</span><span class="value">{total_time}</span></div>
   </div>
 
 {compare_block}
 
+{pace_trend_block}
+
 {team_links_block}
 
   <table>
     <thead>
-      <tr><th>Round</th><th>Location</th><th>Date</th><th>Conds.</th><th>Cat. position</th><th>Points</th><th>Status</th></tr>
+      <tr><th>Round</th><th>Location</th><th>Date</th><th>Conds.</th><th>Cat. position</th><th>Points</th><th>Pace grade</th><th>Status</th></tr>
     </thead>
     <tbody>
 {rows}
@@ -593,7 +691,9 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
-ROW_TEMPLATE = '      <tr{row_class}><td>{round}{best_tag}</td><td>{location}</td><td>{date}</td><td>{conditions}</td><td>{cat_pos}{medal}</td><td>{points}</td><td>{status}</td></tr>\n'
+ROW_TEMPLATE = ('      <tr{row_class}><td>{round}{best_tag}</td><td>{location}</td><td>{date}</td>'
+                 '<td>{conditions}</td><td>{cat_pos}{medal}</td><td>{points}</td>'
+                 '<td>{pace_grade}{pace_best_tag}</td><td>{status}</td></tr>\n')
 
 
 def render_team_links_block(club: Optional[str], db_stem: str) -> str:
@@ -616,8 +716,53 @@ def render_team_links_block(club: Optional[str], db_stem: str) -> str:
     return f'  <div class="team-links">{esc(club_clean)} — {link_html}</div>'
 
 
+def render_pace_trend_block(stats: Dict) -> str:
+    """
+    A short, positively-framed season trend line comparing a rider's
+    earlier graded rounds to their more recent ones. "" if there isn't
+    enough graded history yet (see PACE_TREND_MIN_ROUNDS / pace_grade_
+    scoring.pace_grade_trend for the threshold and the split itself).
+
+    All three directions are framed supportively — a "down" trend is
+    real information a rider might want, but courses and conditions
+    vary week to week, so it's shown as a plain, calm note rather than
+    a red flag, and never as the only thing said about their pace.
+    """
+    trend = stats.get("pace_trend")
+    if not trend:
+        return ""
+
+    early = trend["early_avg"]
+    late = trend["late_avg"]
+    direction = trend["direction"]
+
+    if direction == "up":
+        text = (
+            f'📈 Your pace grade is trending up this season — averaging '
+            f'<strong>{late:.0f}%</strong> in recent rounds vs '
+            f'<strong>{early:.0f}%</strong> earlier on. Nice work.'
+        )
+    elif direction == "steady":
+        text = (
+            f'👍 Your pace grade has been rock steady this season — around '
+            f'<strong>{late:.0f}%</strong> recently, much the same as the '
+            f'<strong>{early:.0f}%</strong> you were riding at earlier on.'
+        )
+    else:  # "down"
+        text = (
+            f'Your pace grade has eased a little this season — '
+            f'<strong>{late:.0f}%</strong> in recent rounds vs '
+            f'<strong>{early:.0f}%</strong> earlier on. Courses and conditions '
+            f'vary a lot week to week, so this is just one signal among many — '
+            f'worth a look alongside your best rounds, not a verdict on its own.'
+        )
+
+    return f'  <div class="pace-trend {esc(direction)}">{text}</div>'
+
+
 def render_page(race_number: int, firstname: str, surname: str, gender: str,
                 club: str, category: str, history: List[Tuple], stats: Dict,
+                pace_grades: Dict[int, Optional[float]],
                 round_names: Dict[int, Dict[str, str]], db_stem: str) -> str:
     name = display_name(firstname, surname)
 
@@ -640,10 +785,11 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
 
     medal_rounds = stats["medal_rounds"]
     best_round = stats["best_round"]
+    best_pace_round = stats["best_pace_round"]
 
     rows_html = ""
     if not history:
-        rows_html = '      <tr><td colspan="7">No results recorded yet this season.</td></tr>\n'
+        rows_html = '      <tr><td colspan="8">No results recorded yet this season.</td></tr>\n'
     else:
         for rnd, cat_pos, overall_pos, points, is_ap, status, laps, time_sec in history:
             if is_ap or points == AP_MARKER:
@@ -662,6 +808,13 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
             row_class = ' class="best-round"' if is_best else ""
             best_tag = '<span class="best-tag">★ Season best</span>' if is_best else ""
 
+            grade = pace_grades.get(rnd)
+            pace_grade_disp = format_pct(grade) if (status == "FIN" and not is_ap) else "—"
+            is_best_pace = (rnd == best_pace_round) and best_pace_round is not None
+            pace_best_tag = (
+                '<span class="pace-best-tag">⚡ Best pace</span>' if is_best_pace else ""
+            )
+
             rows_html += ROW_TEMPLATE.format(
                 row_class=row_class,
                 round=round_label(rnd),
@@ -672,6 +825,8 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
                 cat_pos=esc(cat_pos if cat_pos is not None else ""),
                 medal=medal_html,
                 points=points_disp,
+                pace_grade=pace_grade_disp,
+                pace_best_tag=pace_best_tag,
                 status=status_disp,
             )
 
@@ -700,6 +855,7 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
             )
         compare_block += "</div>"
 
+    pace_trend_block = render_pace_trend_block(stats)
     team_links_block = render_team_links_block(club, db_stem)
 
     def fmt(v, decimals=1):
@@ -720,9 +876,11 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
         best_cat_position=fmt(stats["best_cat_position"], 0),
         best_points=fmt(stats["best_points"], 0),
         avg_points=fmt(stats["avg_points"], 1),
+        avg_pace_grade=format_pct(stats["avg_pace_grade"]),
         total_laps=stats["total_laps"] if stats["total_laps"] else "—",
         total_time=format_duration(stats["total_time_seconds"]),
         compare_block=compare_block,
+        pace_trend_block=pace_trend_block,
         team_links_block=team_links_block,
         rows=rows_html,
         iframe_resize_script=IFRAME_RESIZE_SCRIPT,
@@ -782,6 +940,18 @@ def main():
         conn = sqlite3.connect(str(db_path))
         ensure_schema(conn, db_path.name)
 
+        # One query per DB, shared across every rider in it — each
+        # (round, pace group) leader pace never changes between riders in
+        # that group, so there's no reason to recompute it per rider (and
+        # no risk of it drifting either). Keyed by (round, pace group),
+        # NOT just round and NOT just race_category — see pace_group_for()
+        # and compute_round_leader_paces' docstring: a plain per-round
+        # leader was wrong for a DB that bundles more than one age group
+        # (U8.db, Youth.db), and a plain per-category leader was ALSO
+        # wrong for DBs where several categories share one actual start
+        # (Seniors.db, Masters.db, Women.db).
+        leader_paces = compute_round_leader_paces(conn, args.rounds, db_stem)
+
         riders = load_riders(conn)
         print(f"\n{db_path.name}: {len(riders)} riders")
 
@@ -793,8 +963,9 @@ def main():
                 continue
 
             history = load_results_for_rider(conn, rider_id, args.rounds)
+            pace_grades = compute_rider_pace_grades(history, leader_paces, db_stem, race_category)
             stats = compute_stats(
-                history,
+                history, pace_grades,
                 season_length=args.rounds,
                 race_category=race_category,
                 race_category_previous_year=race_category_prev,
@@ -803,7 +974,7 @@ def main():
 
             page_html = render_page(
                 race_number, firstname, surname, gender, club_name,
-                race_category, history, stats, round_names, db_stem,
+                race_category, history, stats, pace_grades, round_names, db_stem,
             )
 
             out_file = riders_dir / f"{race_number}.html"
@@ -846,3 +1017,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

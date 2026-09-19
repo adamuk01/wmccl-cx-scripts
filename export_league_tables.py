@@ -5,7 +5,7 @@ export_league_tables.py
 Export league tables as separate CSV files (one per "table") from a single SQLite DB.
 
 Scoring:
-  - Best N (default 9) from up to R rounds (default 12).
+  - Best N (default 10) from up to R rounds (default 12).
   - AP rounds are stored as points=999 and/or is_ap=1 in results.
   - When exporting, AP points are replaced with rider's CURRENT season average
     (average of non-AP points in this DB up to --upto-round).
@@ -30,8 +30,16 @@ Profiles (match your 7-db-per-race setup):
   - u12    : U12M,U12F
   - youth  : U14M,U14F,U16M,U16F
   - women  : Women_All (everything in that DB)
-  - seniors: JunM; SenM+U23M; M40M; M50M; M60M+M70M
-  - masters: M40M; M50M; M60M+M70M  (if you have a masters-only DB)
+  - seniors: JunM; SenM+U23M; M40M+M45M
+  - masters: M50M+M55M; M60M+M65M; M70M
+
+  (Fixed 2026-09-19: seniors and masters used to both define M40M/M50M/M60M/
+  M70M buckets, even though M40/M45 only ever race in Seniors.db and M50-M70
+  only ever race in Masters.db. The always-empty duplicate entries didn't
+  affect this CSV script directly, but they collided in
+  export_league_tables_html.py's accumulating index manifest — see
+  league_scoring.py's profile_tables() for the full story. Each profile now
+  only lists buckets that can actually have riders in its own DB.)
 
 Usage examples:
   python3 export_league_tables.py --db U8.db     --profile u8
@@ -228,7 +236,7 @@ def main():
                     help="Grouping rules matching your DB/race")
     ap.add_argument("--outdir", default=".", help="Base output directory (default: .)")
     ap.add_argument("--rounds", type=int, default=12, help="Number of rounds columns to export (default: 12)")
-    ap.add_argument("--best", type=int, default=9, help="Best N results (default: 9)")
+    ap.add_argument("--best", type=int, default=10, help="Best N results (default: 10)")
     ap.add_argument("--upto-round", type=int, default=None,
                     help="Compute averages using results up to this round (inclusive). "
                          "Default: max round present in DB (capped by --rounds).")

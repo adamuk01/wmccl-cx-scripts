@@ -126,17 +126,36 @@ def profile_tables(profile: str) -> Dict[str, List[str]]:
             "JunM": ["JunM"],
             "Sen_U23_M": ["SenM", "U23M"],
 
-            # Masters groupings as requested
+            # Masters groupings as requested. Seniors.db only ever holds
+            # Junior/Senior/U23/M40/M45 riders (M40 races WITH the Seniors
+            # field, on its own gun, after Senior/U23 — see
+            # pace_grade_scoring.py for the full start-line breakdown) —
+            # M50 and up never appear here, so no M50M/M60M/M70M table is
+            # defined for this profile (see 2026-09-19 fix note below).
             "M40M": ["M40M", "M45M"],
-            "M50M": ["M50M", "M55M"],
-            "M60M": ["M60M", "M65M"],
-            "M70M": ["M70M"],
         }
 
     if profile == "masters":
         return {
-            # Masters groupings as requested
-            "M40M": ["M40M", "M45M"],
+            # Masters.db holds ONLY M50-M70 riders (confirmed with Adam:
+            # M40/M45 race with the Seniors field instead, in Seniors.db —
+            # see profile == "seniors" above). Fixed 2026-09-19: this used
+            # to also define an "M40M" table here, identical in name to
+            # the real one in the "seniors" profile above. Since Masters.db
+            # never actually has M40/M45 riders, that entry was always an
+            # empty table — but export_league_tables_html.py's index page
+            # is built from a manifest that ACCUMULATES across every
+            # profile's run and POPS a table name out of the manifest
+            # whenever a run finds it empty. So running this "masters"
+            # profile after "seniors" had already written a real M40M.html
+            # silently wiped M40M off the index (the file stayed on disk,
+            # untouched — it just vanished from the season hub page) the
+            # next time the two were run in the wrong order, or Masters.db
+            # was re-run on its own. Dropping the dead M40M entry here
+            # removes the collision entirely. M50M/M60M/M70M were exposed
+            # to the exact same risk in reverse (the old "seniors" profile
+            # also defined those, always empty for Seniors.db) — trimmed
+            # above for the same reason.
             "M50M": ["M50M", "M55M"],
             "M60M": ["M60M", "M65M"],
             "M70M": ["M70M"],

@@ -12,28 +12,90 @@ Rules:
   - Riders must have completed >= 2/3 of all valid league rounds.
   - Riders must have >= 2 finishes in the early-season window (first 4 valid rounds).
   - Riders must have >= 2 finishes in the late-season window (last 4 valid rounds).
-  - Percentile score per finish: 1.0 = winner, 0.0 = last place, scaled by field size.
-    Percentile is calculated within the rider's race_category AND gender group per round.
-  - Improvement Score = late-season avg percentile − early-season avg percentile.
+  - Per-round score (see SCORING below) is averaged over each window.
+  - Improvement Score = late-season avg score − early-season avg score.
   - Ties broken by: (1) higher late-season avg, (2) more total finishes,
-    (3) highest single late-season percentile.
+    (3) highest single late-season score.
+
+SCORING (2026-09-19 — switched from rank-percentile to Pace Grade, now
+that results carry laps_completed/finish_time_seconds):
+
+  Originally every round was scored purely by finishing RANK: 1st in the
+  category = 1.0, last = 0.0, scaled by how many riders were in the
+  field that round (percentile_score()). That's still available
+  (--score-basis percentile) and is still used as an automatic fallback
+  for any round where time data isn't there to grade with, but it's no
+  longer the default because it has two real accuracy problems once you
+  have actual pace to compare against:
+
+    1. It's sensitive to who else showed up, not just to the rider's
+       own pace. If the strong riders in a category stop attending
+       late-season (illness, other commitments, end of a short-course
+       category's age window), a rider whose own pace hasn't changed AT
+       ALL can look like they've gotten dramatically better OR worse
+       just because the field shrank or changed shape around them —
+       nothing about their actual riding changed.
+    2. It can't tell margin from meaningless order. Moving from 9th to
+       6th because two riders slower than you retired, versus moving
+       from 9th to 6th because you closed a two-minute gap, score
+       identically under rank. A rider padded by a couple of slow new
+       arrivals at the back of the field can look like "most improved"
+       for barely any real gain in pace at all.
+
+  Now the default (--score-basis auto) scores each round with PACE GRADE
+  instead — the rider's pace (seconds/lap) that round compared to the
+  fastest pace in their own PACE GROUP that same round (leader = 100%),
+  exactly the metric already shown on rider pages and explained in
+  pace-grade-explainer.html. It's computed via pace_grade_scoring.py —
+  the SAME shared module export_rider_pages.py uses — so this award can
+  never disagree with what a rider sees on their own page, and it
+  automatically gets the same pace-group handling (Seniors/Masters/Women
+  category merging, gender splits, etc.) for free rather than
+  re-deriving field-size groupings by hand as the old percentile code
+  did. Because it's a continuous measure of actual speed relative to
+  that day's fastest rider, it isn't distorted by field size or
+  composition the way rank is — a rider who hasn't gotten any faster
+  scores the same whether the field is 10 riders or 6.
+
+  Pace Grade needs laps_completed/finish_time_seconds on the result,
+  which won't exist for rounds imported before that data started being
+  captured. --score-basis auto handles that gracefully: any round with
+  no gradeable pace data (older rounds, or a round where nobody in the
+  rider's pace group has a leader time — see pace_grade_scoring.py)
+  automatically falls back to the old rank-percentile score for THAT
+  round only, so a season that's mid-transition to storing race times
+  still produces a result rather than losing early rounds outright.
+  Each round's round_detail records which method actually scored it
+  (see "score_source"), and the printed/CSV output show it, so it's
+  never a silent switch.
+
+  Both scores are 0.0-1.0 (percentile always was; Pace Grade is stored
+  as a 0-100 percentage internally, same as pace_grade_scoring.py and
+  the rider pages, and divided by 100 here purely so the two scales
+  line up and existing thresholds like --min-improvement /
+  --min-season-gain keep meaning roughly the same size of change).
 
 Usage:
   python3 most_improved_rider.py --db U12.db --db Youth.db --db Seniors.db --db Masters.db
   python3 most_improved_rider.py --db Seniors.db --max-rounds 12 --early-window 4 --late-window 4
   python3 most_improved_rider.py --db U12.db --csv most_improved_u12.csv
+  python3 most_improved_rider.py --db Seniors.db --score-basis percentile   # old behaviour
 """
 
 import argparse
 import csv
+import math
 import sqlite3
 from pathlib import Path
 from collections import defaultdict
+
+from pace_grade_scoring import compute_round_leader_paces, compute_rider_pace_grades
 
 
 NONLEAGUE_THRESHOLD = 900
 DEFAULT_EARLY_WINDOW = 4
 DEFAULT_LATE_WINDOW  = 4
+SCORE_BASIS_CHOICES = ("auto", "pace", "percentile")
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +114,19 @@ def get_valid_rounds(conn):
         ORDER BY round
     """)
     return [row[0] for row in cur.fetchall()]
+
+
+def has_time_columns(conn) -> bool:
+    """
+    True if this DB's results table has the laps_completed /
+    finish_time_seconds columns (added by migrate_add_time_laps.py).
+    Older un-migrated DBs simply don't have them yet — that's not an
+    error, it just means pace-based scoring can't run against this DB
+    and everything falls back to rank-percentile.
+    """
+    cur = conn.execute("PRAGMA table_info(results)")
+    cols = {row[1] for row in cur.fetchall()}
+    return {"laps_completed", "finish_time_seconds"} <= cols
 
 
 def get_league_riders(conn):
@@ -77,28 +152,56 @@ def get_league_riders(conn):
     return riders
 
 
-def get_all_finishes(conn, rider_ids):
+def get_all_finishes(conn, rider_ids, with_time_cols):
     """
     Return all FIN results for the given rider_ids.
-    Returns dict: rider_id -> list of {round, cat_position, overall_position, points}
+    Returns dict: rider_id -> list of {round, cat_position, overall_position,
+    points, is_ap, laps_completed, finish_time_seconds}
+
+    laps_completed/finish_time_seconds are only selected when the DB
+    actually has those columns (with_time_cols) — older DBs get None
+    for both on every row, which flows straight through to "no pace
+    grade available, fall back to percentile" without any special-casing
+    here.
     """
     if not rider_ids:
         return {}
     placeholders = ",".join("?" * len(rider_ids))
-    cur = conn.execute(f"""
-        SELECT rider_id, round, cat_position, overall_position, points
-        FROM results
-        WHERE status = 'FIN'
-          AND rider_id IN ({placeholders})
-        ORDER BY rider_id, round
-    """, list(rider_ids))
+
+    if with_time_cols:
+        cur = conn.execute(f"""
+            SELECT rider_id, round, cat_position, overall_position, points,
+                   is_ap, laps_completed, finish_time_seconds
+            FROM results
+            WHERE status = 'FIN'
+              AND rider_id IN ({placeholders})
+            ORDER BY rider_id, round
+        """, list(rider_ids))
+    else:
+        cur = conn.execute(f"""
+            SELECT rider_id, round, cat_position, overall_position, points,
+                   is_ap
+            FROM results
+            WHERE status = 'FIN'
+              AND rider_id IN ({placeholders})
+            ORDER BY rider_id, round
+        """, list(rider_ids))
+
     finishes = defaultdict(list)
     for row in cur.fetchall():
-        finishes[row[0]].append({
-            "round":            row[1],
-            "cat_position":     row[2],
-            "overall_position": row[3],
-            "points":           row[4],
+        if with_time_cols:
+            rider_id, rnd, cat_pos, overall_pos, points, is_ap, laps, time_sec = row
+        else:
+            rider_id, rnd, cat_pos, overall_pos, points, is_ap = row
+            laps, time_sec = None, None
+        finishes[rider_id].append({
+            "round":            rnd,
+            "cat_position":     cat_pos,
+            "overall_position": overall_pos,
+            "points":           points,
+            "is_ap":            is_ap,
+            "laps_completed":         laps,
+            "finish_time_seconds":    time_sec,
         })
     return finishes
 
@@ -159,8 +262,8 @@ def percentile_score(cat_position, field_size):
 def linear_regression_slope(xs, ys):
     """
     Compute the slope of the least-squares regression line through (xs, ys).
-    xs = round numbers (x-axis), ys = percentile scores (y-axis).
-    Returns the slope (percentile gain per round) or None if fewer than 3 points.
+    xs = round numbers (x-axis), ys = per-round scores (y-axis).
+    Returns the slope (score gain per round) or None if fewer than 3 points.
     A positive slope means the rider improved over time.
     """
     n = len(xs)
@@ -185,19 +288,29 @@ def calculate_most_improved(conn, db_label, max_rounds,
                              single_table=False,
                              min_window_finishes=3,
                              min_improvement=0.0,
-                             min_early_avg=0.0):
+                             min_early_avg=0.0,
+                             score_basis="auto"):
     """
     Run the Most Improved calculation for one database.
 
-    single_table=True  : women's single-table mode — percentile is based on
-                         overall_position within the full gender group, not
-                         cat_position within the sub-category. Use this for
-                         the Women's DB where all females race as one table.
+    single_table=True  : women's single-table mode — when a round falls
+                         back to percentile scoring, percentile is based
+                         on overall_position within the full gender
+                         group, not cat_position within the sub-category.
+                         Use this for the Women's DB. (Pace-based rounds
+                         don't need this flag — pace_grade_scoring.py's
+                         PACE_GROUP_OVERRIDES already treats Women.db as
+                         one pace group regardless of category.)
+
+    score_basis : "auto" (pace grade where gradeable, else rank
+                  percentile for that round — the default), "pace"
+                  (pace grade only; rounds with no gradeable time data
+                  are simply excluded from that rider's scoring, same as
+                  a DNF), or "percentile" (the original rank-based
+                  method only, ignoring any time data present).
 
     Returns a list of result dicts, sorted by improvement score descending.
     """
-
-    import math
 
     valid_rounds = get_valid_rounds(conn)
     total_valid  = len(valid_rounds)
@@ -221,12 +334,32 @@ def calculate_most_improved(conn, db_label, max_rounds,
         print(f"  [{db_label}] No league riders found — skipping.")
         return []
 
-    all_finishes          = get_all_finishes(conn, list(league_riders.keys()))
+    with_time_cols = has_time_columns(conn)
+    if score_basis == "pace" and not with_time_cols:
+        raise SystemExit(
+            f"❌ {db_label}: --score-basis pace requires laps_completed/"
+            f"finish_time_seconds on 'results'.\n"
+            f"   Run migrate_add_time_laps.py --db {db_label}.db first, "
+            f"or use --score-basis auto/percentile."
+        )
+    if score_basis in ("auto", "pace") and not with_time_cols:
+        print(f"  [{db_label}] No time/laps columns on this DB yet — "
+              f"scoring every round by rank percentile (run "
+              f"migrate_add_time_laps.py + re-import results to enable "
+              f"pace-based scoring).")
+
+    use_pace = with_time_cols and score_basis in ("auto", "pace")
+
+    all_finishes = get_all_finishes(conn, list(league_riders.keys()), with_time_cols)
     field_by_cat, field_by_gender = compute_field_sizes(conn, valid_rounds)
+
+    leader_paces = {}
+    if use_pace:
+        leader_paces = compute_round_leader_paces(conn, max_rounds, db_label)
 
     def get_position_and_field(rnd, cat, gender, cat_position, overall_position):
         """
-        Return (position, field_size) to use for percentile calculation.
+        Return (position, field_size) to use for the percentile fallback.
 
         single_table mode  → use overall_position vs full gender field.
         normal mode        → use cat_position vs per-category field, with a
@@ -257,7 +390,9 @@ def calculate_most_improved(conn, db_label, max_rounds,
         # Only count finishes in valid rounds
         valid_finishes = [f for f in finishes if f["round"] in set(valid_rounds)]
 
-        # Participation check
+        # Participation check (about actually finishing, not about
+        # having a usable score — an AP-row-free "real" finish counts
+        # here even if it later can't be scored by either method).
         if len(valid_finishes) < min_finishes_total:
             continue
 
@@ -268,38 +403,74 @@ def calculate_most_improved(conn, db_label, max_rounds,
         if len(early_finishes) < min_window_finishes or len(late_finishes) < min_window_finishes:
             continue
 
+        # Pace grades for every round this rider has a finish in (only
+        # meaningful when use_pace — cheap no-op dict otherwise).
+        pace_grades = {}
+        if use_pace:
+            history = [
+                (f["round"], f["cat_position"], f["overall_position"], f["points"],
+                 f["is_ap"], "FIN", f["laps_completed"], f["finish_time_seconds"])
+                for f in valid_finishes
+            ]
+            pace_grades = compute_rider_pace_grades(history, leader_paces, db_label, cat)
+
         # Build per-round score detail for ALL valid finishes (used for display + averages)
         round_detail = {}
         for f in valid_finishes:
+            rnd = f["round"]
+
+            pace_pct = pace_grades.get(rnd) if use_pace else None
+            pace_score = (pace_pct / 100.0) if pace_pct is not None else None
+
             pos, fs = get_position_and_field(
-                f["round"], cat, gender, f["cat_position"], f["overall_position"]
+                rnd, cat, gender, f["cat_position"], f["overall_position"]
             )
-            pct = percentile_score(pos, fs) if (fs and pos is not None) else None
+            pct_score = percentile_score(pos, fs) if (fs and pos is not None) else None
+
+            if score_basis == "percentile":
+                score, source = pct_score, ("percentile" if pct_score is not None else None)
+            elif score_basis == "pace":
+                score, source = pace_score, ("pace" if pace_score is not None else None)
+            else:  # auto
+                if pace_score is not None:
+                    score, source = pace_score, "pace"
+                else:
+                    score, source = pct_score, ("percentile" if pct_score is not None else None)
+
             window = ""
-            if f["round"] in early_rounds:
+            if rnd in early_rounds:
                 window = "E"
-            if f["round"] in late_rounds:
+            if rnd in late_rounds:
                 window = window + "L"
-            round_detail[f["round"]] = {
+            round_detail[rnd] = {
                 "cat_position":     f["cat_position"],
                 "overall_position": f["overall_position"],
-                "position_used":    pos,        # what was actually scored
+                "position_used":    pos,        # rank actually used for the percentile fallback
                 "field_size":       fs,
                 "points":           f.get("points"),
-                "percentile":       pct,
+                "pace_grade_pct":   pace_pct,   # raw Pace Grade (0-100), None if ungradeable
+                "percentile":       pct_score,  # rank-based score, always computed when possible
+                "score":            score,      # the score actually used (pace_score or pct_score)
+                "score_source":     source,     # "pace" | "percentile" | None (ungraded round)
                 "window":           window,
             }
 
-        def avg_percentile_from_detail(window_flag):
+        def avg_score_from_detail(window_flag):
             scores = [
-                d["percentile"]
+                d["score"]
                 for d in round_detail.values()
-                if window_flag in d["window"] and d["percentile"] is not None
+                if window_flag in d["window"] and d["score"] is not None
             ]
             return (sum(scores) / len(scores)) if scores else None
 
-        early_avg = avg_percentile_from_detail("E")
-        late_avg  = avg_percentile_from_detail("L")
+        def graded_count_from_detail(window_flag, source):
+            return sum(
+                1 for d in round_detail.values()
+                if window_flag in d["window"] and d["score_source"] == source
+            )
+
+        early_avg = avg_score_from_detail("E")
+        late_avg  = avg_score_from_detail("L")
 
         if early_avg is None or late_avg is None:
             continue
@@ -309,29 +480,44 @@ def calculate_most_improved(conn, db_label, max_rounds,
 
         improvement = late_avg - early_avg
 
-        # Regression slope across all valid finishes
+        # Under --score-basis auto, a rider whose early window fell back to
+        # percentile (no time data recorded yet for those older rounds)
+        # but whose late window is pace-graded is having "improvement"
+        # computed as a pace-grade average MINUS a rank-percentile average
+        # — two different scales/meanings, not a clean single measurement.
+        # Flag it rather than silently blend it: the number is still the
+        # best comparison available (better than not scoring those rounds
+        # at all), but it should be read with more caution than a rider
+        # whose whole window used one consistent method throughout.
+        sources_used = {
+            d["score_source"] for d in round_detail.values()
+            if d["window"] and d["score_source"] is not None
+        }
+        mixed_basis = len(sources_used) > 1
+
+        # Regression slope across all valid, scored finishes
         reg_xs = sorted(round_detail.keys())
-        reg_ys = [round_detail[rnd]["percentile"] for rnd in reg_xs
-                  if round_detail[rnd]["percentile"] is not None]
+        reg_ys = [round_detail[rnd]["score"] for rnd in reg_xs
+                  if round_detail[rnd]["score"] is not None]
         reg_xs = [rnd for rnd in reg_xs
-                  if round_detail[rnd]["percentile"] is not None]
+                  if round_detail[rnd]["score"] is not None]
         slope = linear_regression_slope(reg_xs, reg_ys)
 
         # Predicted improvement across the full season span using slope
-        # (slope * (last_round - first_round)) gives total percentile gain)
+        # (slope * (last_round - first_round)) gives total score gain)
         if slope is not None and len(reg_xs) >= 2:
             season_span  = reg_xs[-1] - reg_xs[0]
             slope_improvement = slope * season_span
         else:
             slope_improvement = None
 
-        # Highest single late-season percentile (for tie-break)
-        late_percentiles = [
-            d["percentile"]
+        # Highest single late-season score (for tie-break)
+        late_scores = [
+            d["score"]
             for d in round_detail.values()
-            if "L" in d["window"] and d["percentile"] is not None
+            if "L" in d["window"] and d["score"] is not None
         ]
-        best_late_pct = max(late_percentiles) if late_percentiles else 0.0
+        best_late_pct = max(late_scores) if late_scores else 0.0
 
         results.append({
             "db_label":       db_label,
@@ -350,7 +536,13 @@ def calculate_most_improved(conn, db_label, max_rounds,
             "round_detail":       round_detail,
             "valid_rounds":       valid_rounds,
             "single_table":       single_table,
-            "slope":              slope,               # percentile gain per round number
+            "score_basis":        score_basis,
+            "mixed_basis":        mixed_basis,
+            "pace_rounds_early":       graded_count_from_detail("E", "pace"),
+            "pace_rounds_late":        graded_count_from_detail("L", "pace"),
+            "percentile_rounds_early": graded_count_from_detail("E", "percentile"),
+            "percentile_rounds_late":  graded_count_from_detail("L", "percentile"),
+            "slope":              slope,               # score gain per round number
             "slope_improvement":  slope_improvement,   # slope * season span
         })
 
@@ -382,7 +574,8 @@ def print_round_breakdown(r, valid_rounds, label="", single_table=False):
     if label:
         print(f"  {label}")
     pos_label = "OvPos" if single_table else "CatPos"
-    header = f"  {'Rd':<4} {'Window':<7} {pos_label:<7} {'Field':<6} {'Pts':<6} {'Pct%':<8}"
+    header = (f"  {'Rd':<4} {'Window':<7} {'Src':<5} {pos_label:<7} {'Field':<6} "
+              f"{'Pts':<6} {'PaceG%':<8} {'Score%':<8}")
     print(header)
     print("  " + "-" * (len(header) - 2))
     rd = r.get("round_detail", {})
@@ -391,12 +584,14 @@ def print_round_breakdown(r, valid_rounds, label="", single_table=False):
             continue
         d = rd[rnd]
         win  = d["window"] or "-"
+        src  = {"pace": "pace", "percentile": "rank", None: "-"}[d["score_source"]]
         pos  = str(d["position_used"]) if d.get("position_used") is not None else "-"
         fld  = str(d["field_size"])    if d["field_size"]   is not None else "-"
         pts  = str(d["points"])        if d["points"]       is not None else "-"
-        pct  = f"{d['percentile']*100:.1f}%" if d["percentile"] is not None else "-"
+        paceg = f"{d['pace_grade_pct']:.1f}" if d["pace_grade_pct"] is not None else "-"
+        pct  = f"{d['score']*100:.1f}%" if d["score"] is not None else "-"
         marker = " ◀ early" if win == "E" else (" ◀ late" if win == "L" else "")
-        print(f"  {rnd:<4} {win:<7} {pos:<7} {fld:<6} {pts:<6} {pct:<8}{marker}")
+        print(f"  {rnd:<4} {win:<7} {src:<5} {pos:<7} {fld:<6} {pts:<6} {paceg:<8} {pct:<8}{marker}")
     print()
 
 
@@ -405,7 +600,7 @@ def print_results(db_label, results, top_n=10, detail_top_n=3, min_season_gain=0
     Print results with regression as primary method, window as secondary check.
     min_season_gain : minimum slope_improvement to count as a winner (default 5%).
     """
-    W = 72
+    W = 78
     print(f"\n{'='*W}")
     print(f"  Most Improved Rider — {db_label}")
     print(f"{'='*W}")
@@ -414,6 +609,16 @@ def print_results(db_label, results, top_n=10, detail_top_n=3, min_season_gain=0
         return
 
     valid_rounds = results[0].get("valid_rounds", [])
+    basis = results[0].get("score_basis", "auto")
+    pace_rounds = sum(r["pace_rounds_early"] + r["pace_rounds_late"] for r in results)
+    rank_rounds = sum(r["percentile_rounds_early"] + r["percentile_rounds_late"] for r in results)
+    print(f"  Score basis: {basis}  "
+          f"(window rounds scored — pace: {pace_rounds}, rank fallback: {rank_rounds})")
+    mixed_riders = [r["name"] for r in results if r.get("mixed_basis")]
+    if mixed_riders:
+        print(f"  ⚠ {len(mixed_riders)} rider(s) have early/late windows scored by DIFFERENT "
+              f"methods (some rounds lack time data) — their improvement figure mixes rank-"
+              f"percentile and Pace Grade and should be read with caution. Marked '†' below.")
 
     # ── Regression ranking (PRIMARY) ──────────────────────────────────────────
     reg_results = sorted(
@@ -424,21 +629,21 @@ def print_results(db_label, results, top_n=10, detail_top_n=3, min_season_gain=0
                   if reg_results and reg_results[0]["slope_improvement"] >= min_season_gain
                   else None)
 
-    print(f"  PRIMARY — Improvement trend across all rounds")
+    print(f"\n  PRIMARY — Improvement trend across all rounds")
     reg_header = (f"  {'Rank':<5} {'Name':<25} {'Cat':<6} {'Gen':<4} "
-                  f"{'Fin':<5} {'Slope/Rd':<10} {'SeasonGain':<12} {'AvgPct'}")
+                  f"{'Fin':<5} {'Slope/Rd':<10} {'SeasonGain':<12} {'AvgScore'}")
     print(reg_header)
     print("  " + "-" * (len(reg_header) - 2))
     for i, r in enumerate(reg_results[:top_n], start=1):
         si  = r["slope_improvement"]
         sl  = r["slope"]
-        pcts = [d["percentile"] for d in r["round_detail"].values()
-                if d["percentile"] is not None]
-        avg = sum(pcts) / len(pcts) if pcts else 0
+        scs = [d["score"] for d in r["round_detail"].values() if d["score"] is not None]
+        avg = sum(scs) / len(scs) if scs else 0
         qualmark = " 📈" if (i == 1 and reg_winner) else (" ✗" if si < min_season_gain else "")
+        mixmark = " †" if r.get("mixed_basis") else ""
         print(f"  {i:<5} {r['name']:<25} {r['race_category']:<6} {r['gender']:<4} "
               f"{r['total_finishes']:<5} {sl*100:>+8.3f}%   {si*100:>+8.2f}%"
-              f"     {avg*100:.1f}%{qualmark}")
+              f"     {avg*100:.1f}%{qualmark}{mixmark}")
     print()
 
     if reg_winner:
@@ -467,10 +672,11 @@ def print_results(db_label, results, top_n=10, detail_top_n=3, min_season_gain=0
     if qualifiers:
         for i, r in enumerate(qualifiers[:top_n], start=1):
             flag = " ✓" if i == 1 else ""
+            mixmark = " †" if r.get("mixed_basis") else ""
             print(f"  {i:<5} {r['name']:<25} {r['race_category']:<6} {r['gender']:<4} "
                   f"{r['total_finishes']:<5} {r['early_avg_pct']*100:<8.1f} "
                   f"{r['late_avg_pct']*100:<8.1f} {r['improvement']*100:<+10.1f} "
-                  f"{r['best_late_pct']*100:.1f}%{flag}")
+                  f"{r['best_late_pct']*100:.1f}%{flag}{mixmark}")
     else:
         print("  (no qualifying riders)")
 
@@ -519,7 +725,7 @@ def print_results(db_label, results, top_n=10, detail_top_n=3, min_season_gain=0
 
 
 def write_csv(all_results, out_path, max_rounds=12):
-    """Write results to CSV with per-round position, points and percentile columns."""
+    """Write results to CSV with per-round position, points, pace grade and score columns."""
     # Gather the actual rounds used across all results
     all_rounds = set()
     for res_list in all_results:
@@ -529,13 +735,15 @@ def write_csv(all_results, out_path, max_rounds=12):
 
     base_fields = [
         "db_label", "rank", "name", "race_number", "race_category", "gender",
-        "total_finishes", "early_finishes", "late_finishes",
+        "score_basis", "mixed_basis", "total_finishes", "early_finishes", "late_finishes",
         "early_avg_pct", "late_avg_pct", "improvement", "best_late_pct",
+        "pace_rounds_early", "pace_rounds_late",
+        "percentile_rounds_early", "percentile_rounds_late",
     ]
     round_fields = []
     for rnd in rounds_sorted:
-        round_fields += [f"r{rnd}_window", f"r{rnd}_pos", f"r{rnd}_field",
-                         f"r{rnd}_pts", f"r{rnd}_pct"]
+        round_fields += [f"r{rnd}_window", f"r{rnd}_source", f"r{rnd}_pos", f"r{rnd}_field",
+                         f"r{rnd}_pts", f"r{rnd}_pace_grade", f"r{rnd}_pct"]
 
     fieldnames = base_fields + round_fields
 
@@ -551,6 +759,8 @@ def write_csv(all_results, out_path, max_rounds=12):
                     "race_number":    r["race_number"],
                     "race_category":  r["race_category"],
                     "gender":         r["gender"],
+                    "score_basis":    r["score_basis"],
+                    "mixed_basis":    "yes" if r.get("mixed_basis") else "",
                     "total_finishes": r["total_finishes"],
                     "early_finishes": r["early_finishes"],
                     "late_finishes":  r["late_finishes"],
@@ -558,15 +768,22 @@ def write_csv(all_results, out_path, max_rounds=12):
                     "late_avg_pct":   f"{r['late_avg_pct']:.6f}",
                     "improvement":    f"{r['improvement']:.6f}",
                     "best_late_pct":  f"{r['best_late_pct']:.6f}",
+                    "pace_rounds_early":       r["pace_rounds_early"],
+                    "pace_rounds_late":        r["pace_rounds_late"],
+                    "percentile_rounds_early": r["percentile_rounds_early"],
+                    "percentile_rounds_late":  r["percentile_rounds_late"],
                 }
                 rd = r.get("round_detail", {})
                 for rnd in rounds_sorted:
                     d = rd.get(rnd, {})
                     row[f"r{rnd}_window"] = d.get("window", "")
+                    row[f"r{rnd}_source"] = d.get("score_source", "") or ""
                     row[f"r{rnd}_pos"]    = d.get("cat_position", "")
                     row[f"r{rnd}_field"]  = d.get("field_size", "")
                     row[f"r{rnd}_pts"]    = d.get("points", "")
-                    pct = d.get("percentile")
+                    pg = d.get("pace_grade_pct")
+                    row[f"r{rnd}_pace_grade"] = f"{pg:.2f}" if pg is not None else ""
+                    pct = d.get("score")
                     row[f"r{rnd}_pct"]    = f"{pct*100:.2f}" if pct is not None else ""
                 writer.writerow(row)
     print(f"\nResults written to: {out_path}")
@@ -597,12 +814,20 @@ def main():
     ap.add_argument("--min-season-gain", type=float, default=0.05,
                     help="Minimum regression season gain to qualify (default 0.05 = 5%%)")
     ap.add_argument("--min-early-avg", type=float, default=0.0,
-                    help="Minimum early-window average percentile to be eligible (default 0.0). "
+                    help="Minimum early-window average score to be eligible (default 0.0). "
                          "E.g. 0.30 excludes riders who averaged below 30%% in the early window.")
     ap.add_argument("--min-window-finishes", type=int, default=3,
                     help="Minimum finishes required in each window (default 3)")
     ap.add_argument("--single-table", action="store_true",
-                    help="Use overall position vs full gender field (for Women's DB where all females race together)")
+                    help="Use overall position vs full gender field for the rank-percentile "
+                         "fallback (for Women's DB where all females race together). Only "
+                         "affects rounds that fall back to percentile scoring — pace-based "
+                         "rounds already handle Women.db correctly via pace_grade_scoring.py.")
+    ap.add_argument("--score-basis", choices=SCORE_BASIS_CHOICES, default="auto",
+                    help="How to score each round: 'auto' (Pace Grade where the round has "
+                         "time/laps data, rank percentile otherwise — default), 'pace' "
+                         "(Pace Grade only, ungradeable rounds excluded), or 'percentile' "
+                         "(the original rank-only method, ignoring any time data).")
     ap.add_argument("--csv", metavar="FILE",
                     help="Optional path to write combined CSV output")
     args = ap.parse_args()
@@ -631,6 +856,7 @@ def main():
             min_window_finishes=args.min_window_finishes,
             min_improvement=args.min_improvement,
             min_early_avg=args.min_early_avg,
+            score_basis=args.score_basis,
         )
         conn.close()
 

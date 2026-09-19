@@ -53,6 +53,22 @@ export_team_awards_html.py — see that script's docstring). This script
 never writes that cache itself; it only reads it back (if present) each
 time it rebuilds index.html, so running the two generators in either order
 always leaves index.html showing whatever's actually been built so far.
+
+TABLE-NAME COLLISIONS ACROSS PROFILES (fixed 2026-09-19): the manifest below
+is keyed by bare table_name (e.g. "M40M"), accumulated across every profile
+run against this --outdir. Until 2026-09-19, league_scoring.py's
+profile_tables() had "seniors" and "masters" both defining table names like
+"M40M"/"M50M"/"M60M"/"M70M", even though each name only ever had riders in
+ONE of the two DBs. A profile run that found one of these always-empty on
+its own DB would pop that table name out of the manifest (see the skip-empty
+branch below) — silently erasing a real, already-written entry the OTHER
+profile had added, even though that table's .html file was left untouched
+on disk. That's fixed at the source now (profile_tables() only lists table
+names that can actually have riders in their own DB), so this can't happen
+for the currently-defined profiles — but if a future profile change ever
+reintroduces two profiles sharing a table_name, it WILL reproduce this same
+failure mode. Don't key the manifest by bare table_name without re-reading
+this note.
 """
 
 import argparse
