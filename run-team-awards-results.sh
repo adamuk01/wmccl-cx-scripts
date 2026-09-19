@@ -29,22 +29,27 @@ done
 
 echo "Running TEAM COMPETITION - Highest scoring 6 riders from each club per round (combined categories)"
 
-# Youth team (U8+U10+U12 combined)
+# --top-n passed explicitly (6) so it can never silently drift from what
+# this echo text (and the HTML awards pages) say it is -- same fix already
+# applied to --rounds/--best on the category tables.
+
+# Youth team (U8+U10+U12 combined) -- the "U12 team competition"
 team_points_multi.py U8.db U10.db U12.db \
-  --exclude-club "No Club or Team" \
+  --top-n 6 \
+  --exclude-club "No Club/Team" \
   > "$OUTDIR/youth_team.csv"
 
-# Adults team (Women+Seniors+Masters+Youth combined)
+# Adults team (Women+Seniors+Masters+Youth combined) -- the "Team competition"
 team_points_multi.py Women.db Seniors.db Masters.db Youth.db \
-  --exclude-club "No Club or Team" \
+  --top-n 6 \
+  --exclude-club "No Club/Team" \
   > "$OUTDIR/adult_team.csv"
 
-echo "Running Participation Award (Completed rides - FIN only) for the Mick Ives Trophy"
+echo "Running Participation Award (Completed rides - FIN only) for the Mick Ives Participation Award"
 
 club_completed_rides_multi.py U8.db U10.db U12.db Women.db Seniors.db Masters.db Youth.db \
-  --exclude-club "No Club or Team" \
+  --exclude-club "No Club/Team" \
   > "$OUTDIR/participation.csv"
 
 echo "Done. Outputs in $OUTDIR/"
 ls -1 "$OUTDIR"
-

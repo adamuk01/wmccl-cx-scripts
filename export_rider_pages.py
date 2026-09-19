@@ -52,16 +52,17 @@ BADGES / STATS (all computed from data already in the DB):
 WHAT COUNTS AS A "REAL" RESULT:
     AP (average points) rows and DNF rows are excluded from points/
     position/medal/milestone calculations. DNF rows DO still count
-    towards laps completed (they rode those laps) but not towards
+    towards laps completed (they rode them) but not towards
     total race time (no reliable finish time exists for a DNF).
 
 ROUND NAMES / VENUES:
     --rounds-file takes the SAME CSV used to populate each DB's `rounds`
     table (see set_round_names.py / rounds-template.csv), with headers:
-        round,name,venue,date
+        round,name,venue,date,conditions
     Only 'round' and at least one of name/venue/date are required — any
-    of the four can be blank per-row. Older CSVs with just round,name
-    (or round,venue / round,location) still work too.
+    of the four can be blank per-row, and 'conditions' is optional on
+    top of that. Older CSVs with just round,name (or round,venue /
+    round,location, with or without a conditions column) still work too.
 
     Each rider's results table shows two separate columns for this,
     kept apart from the "Round" column so nothing is repeated:
@@ -71,6 +72,35 @@ ROUND NAMES / VENUES:
     The round's "name" (e.g. an event name distinct from its venue) is
     not shown on the rider page — it's only used on the league table
     pages (export_league_tables_html.py) round tooltips/legend.
+
+CONDITIONS (bit of fun):
+    Optional per-round ground/weather conditions, shown as a small icon
+    against each round in a rider's results table (e.g. a rain cloud for
+    a wet round). Read from the same --rounds-file CSV as name/venue/
+    date, via an optional 'conditions' column — one value per round, not
+    per rider, since everyone racing a given round rode the same ground.
+    Recognised values are case-insensitive: dry, wet, muddy, icy, snowy
+    (see CONDITION_ICONS). A blank or unrecognised value just shows no
+    icon rather than erroring, so a typo in the CSV is silently invisible
+    — worth a glance at the generated pages after editing the CSV. The
+    hover tooltip on each icon is a fun nickname (e.g. "Torrent" for a
+    wet round), not the plain CSV word — edit CONDITION_ICONS to change
+    the wording.
+
+TEAM & CLUB AWARDS LINKS (2026-09-19):
+    Each rider page shows a short "Team standings" line linking out to
+    whichever of the 3 award pages (built by export_team_awards_html.py
+    into the SAME --outdir) apply to that rider: the U12 Team Competition
+    or Team Competition depending on which source DB the rider came from
+    (matching the same U8+U10+U12 / Women+Seniors+Masters+Youth groupings
+    run-team-awards-results.sh and export_team_awards_html.py use), plus
+    the Mick Ives Participation Award, which covers every rider. A rider
+    with no club on file (blank, or the "No Club/Team" placeholder used
+    to exclude unattached riders from the awards) gets no links, since
+    they won't appear on those pages. These are plain relative links —
+    this script doesn't check that the award pages actually exist yet,
+    so run export_team_awards_html.py at some point into the same
+    --outdir for them to resolve.
 
 USAGE:
     python3 export_rider_pages.py --db U8.db U10.db U12.db Youth.db \
@@ -98,6 +128,61 @@ from typing import Dict, List, Optional, Tuple
 
 AP_MARKER = 999
 MILESTONE_THRESHOLDS = [5, 10]  # "Full House" is handled separately, at season_length
+
+# Optional per-round ground/weather conditions ("bit of fun") shown as a
+# small icon against each round in a rider's results table — one value
+# per round (not per rider), since everyone racing a given round rode
+# the same ground. Keys are matched case-insensitively against the
+# 'conditions' column in --rounds-file; anything else (including a typo,
+# or a blank/missing value) shows no icon rather than erroring, so it's
+# worth a glance at the generated pages after editing the CSV.
+#
+# The second item in each tuple is the hover title shown on the icon —
+# a bit of fun rather than a plain restatement of the CSV value.
+CONDITION_ICONS = {
+    "dry": ("☀️", "Dust Bowl"),
+    "wet": ("🌧️", "Torrent"),
+    "muddy": ("🟤", "Slip & Slide"),
+    "icy": ("🧊", "The Frostbite Classic"),
+    "snowy": ("❄️", "The Whiteout"),
+}
+
+# Which source DB feeds which team award, mirroring the groupings used by
+# run-team-awards-results.sh / export_team_awards_html.py:
+#   youth_team (U12 Team Competition)  = U8 + U10 + U12
+#   adult_team (Team Competition)      = Women + Seniors + Masters + Youth
+# Matched case-insensitively against the DB's filename stem (no extension),
+# so "U8.db", "u8.DB", etc. all match. Every rider, regardless of DB, also
+# gets a link to the Mick Ives Participation Award (all categories).
+U12_TEAM_DB_STEMS = {"u8", "u10", "u12"}
+ADULT_TEAM_DB_STEMS = {"women", "seniors", "masters", "youth"}
+
+AWARD_LINKS = {
+    "u12_team": ("U12 Team Competition", "../awards/u12-team-competition.html"),
+    "adult_team": ("Team Competition", "../awards/team-competition.html"),
+    "participation": ("Mick Ives Participation Award", "../awards/participation.html"),
+}
+
+# Clubs that are excluded from the award pages (see export_team_awards_html.py
+# / run-team-awards-results.sh's own --exclude-club default) — a rider with
+# this club (or no club at all) won't appear there, so we don't show links.
+NO_CLUB_PLACEHOLDER = "no club/team"
+
+
+def team_award_links_for_db(db_stem: str) -> List[Tuple[str, str]]:
+    """
+    Returns the (label, href) pairs relevant to a rider from this source DB
+    — always the Participation award, plus whichever team competition this
+    DB feeds into (if any).
+    """
+    stem = db_stem.strip().lower()
+    links = []
+    if stem in U12_TEAM_DB_STEMS:
+        links.append(AWARD_LINKS["u12_team"])
+    elif stem in ADULT_TEAM_DB_STEMS:
+        links.append(AWARD_LINKS["adult_team"])
+    links.append(AWARD_LINKS["participation"])
+    return links
 
 
 # ---------------------------------------------------------------------------
@@ -198,16 +283,18 @@ def load_round_names(path: Optional[str]) -> Dict[int, Dict[str, str]]:
     """
     Loads the shared rounds CSV (same file used for set_round_names.py /
     each DB's `rounds` table), with headers:
-        round,name,venue,date
+        round,name,venue,date,conditions
 
-    Returns {round_number: {"name": ..., "venue": ..., "date": ...}}.
-    Any of name/venue/date may be blank on a given row. Older CSVs that
-    only have round,name (or round,venue / round,location) still work —
+    Returns {round_number: {"name": ..., "venue": ..., "date": ...,
+    "conditions": ...}}. Any of name/venue/date/conditions may be blank
+    on a given row. Older CSVs that only have round,name (or round,venue
+    / round,location, with or without a conditions column) still work —
     whichever of those columns is present is read as "name" and the
     others default to "".
 
     Column matching is case/whitespace-insensitive, so a header like
-    'Round,Location' or ' Round , Name ' still works.
+    'Round,Location' or ' Round , Name ' still works. 'conditions' /
+    'condition' are both accepted for the conditions column.
 
     Returns {} if no file given.
     """
@@ -230,6 +317,7 @@ def load_round_names(path: Optional[str]) -> Dict[int, Dict[str, str]]:
         name_key = normalised.get("name") or normalised.get("location")
         venue_key = normalised.get("venue")
         date_key = normalised.get("date")
+        conditions_key = normalised.get("conditions") or normalised.get("condition")
 
         if round_key is None or not any([name_key, venue_key, date_key]):
             print(f"⚠️  WARNING: rounds file '{p}' doesn't have a recognisable "
@@ -252,6 +340,7 @@ def load_round_names(path: Optional[str]) -> Dict[int, Dict[str, str]]:
                 "name": (row.get(name_key) or "").strip() if name_key else "",
                 "venue": (row.get(venue_key) or "").strip() if venue_key else "",
                 "date": (row.get(date_key) or "").strip() if date_key else "",
+                "conditions": (row.get(conditions_key) or "").strip().lower() if conditions_key else "",
             }
             if any(entry.values()):
                 info[rnd] = entry
@@ -278,6 +367,20 @@ def round_date_label(rnd: int, round_names: Dict[int, Dict[str, str]]) -> str:
     if not info:
         return "—"
     return info["date"] or "—"
+
+
+def round_conditions_icon(rnd: int, round_names: Dict[int, Dict[str, str]]) -> Tuple[str, str]:
+    """
+    Returns (icon, label) for a round's ground/weather conditions, e.g.
+    ("🌧️", "Wet"), looked up in CONDITION_ICONS. Returns ("", "") if no
+    conditions are on file for this round, or the CSV value isn't one of
+    the recognised keys (dry/wet/muddy/icy/snowy) — either way the cell
+    is left blank rather than showing a placeholder or raising an error.
+    """
+    info = round_names.get(rnd)
+    if not info:
+        return "", ""
+    return CONDITION_ICONS.get((info.get("conditions") or "").strip().lower(), ("", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -445,10 +548,13 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   .wmccl-rider .medal.gold {{ background: #f4c430; color: #4a3900; }}
   .wmccl-rider .medal.silver {{ background: #cfd4d8; color: #333; }}
   .wmccl-rider .medal.bronze {{ background: #d8935a; color: #3a2200; }}
+  .wmccl-rider .cond {{ font-size: 1.1rem; cursor: default; }}
   .wmccl-rider tr.best-round {{ background: #fff8e1; }}
   .wmccl-rider .best-tag {{ margin-left: 0.4rem; font-size: 0.75rem; color: #8a6d00; font-weight: 600; }}
   .wmccl-rider .compare {{ margin: 0.5rem 0 1.25rem; font-size: 0.9rem; color: #444; }}
   .wmccl-rider .compare .note {{ display: block; font-size: 0.8rem; color: #888; margin-top: 0.2rem; }}
+  .wmccl-rider .team-links {{ margin: 0 0 1.25rem; font-size: 0.9rem; color: #444; }}
+  .wmccl-rider .team-links a {{ margin-right: 0.75rem; }}
 </style>
 </head>
 <body>
@@ -471,9 +577,11 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 
 {compare_block}
 
+{team_links_block}
+
   <table>
     <thead>
-      <tr><th>Round</th><th>Location</th><th>Date</th><th>Cat. position</th><th>Points</th><th>Status</th></tr>
+      <tr><th>Round</th><th>Location</th><th>Date</th><th>Conds.</th><th>Cat. position</th><th>Points</th><th>Status</th></tr>
     </thead>
     <tbody>
 {rows}
@@ -485,12 +593,32 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
-ROW_TEMPLATE = '      <tr{row_class}><td>{round}{best_tag}</td><td>{location}</td><td>{date}</td><td>{cat_pos}{medal}</td><td>{points}</td><td>{status}</td></tr>\n'
+ROW_TEMPLATE = '      <tr{row_class}><td>{round}{best_tag}</td><td>{location}</td><td>{date}</td><td>{conditions}</td><td>{cat_pos}{medal}</td><td>{points}</td><td>{status}</td></tr>\n'
+
+
+def render_team_links_block(club: Optional[str], db_stem: str) -> str:
+    """
+    A short "Club: X — see Team standings / Participation award" line
+    linking to the relevant award page(s) for this rider's source DB.
+    Returns "" (nothing rendered) for a rider with no club, or with the
+    "No Club/Team" placeholder, since those riders don't appear on the
+    award pages anyway.
+    """
+    club_clean = (club or "").strip()
+    if not club_clean or club_clean.strip().lower() == NO_CLUB_PLACEHOLDER:
+        return ""
+
+    links = team_award_links_for_db(db_stem)
+    if not links:
+        return ""
+
+    link_html = " ".join(f'<a href="{esc(href)}">{esc(label)}</a>' for label, href in links)
+    return f'  <div class="team-links">{esc(club_clean)} — {link_html}</div>'
 
 
 def render_page(race_number: int, firstname: str, surname: str, gender: str,
                 club: str, category: str, history: List[Tuple], stats: Dict,
-                round_names: Dict[int, Dict[str, str]]) -> str:
+                round_names: Dict[int, Dict[str, str]], db_stem: str) -> str:
     name = display_name(firstname, surname)
 
     gender_label = {"M": "Male", "F": "Female"}.get((gender or "").strip().upper(), esc(gender) or "—")
@@ -504,12 +632,18 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
     def date_label(rnd) -> str:
         return esc(round_date_label(rnd, round_names))
 
+    def conditions_cell(rnd) -> str:
+        icon, label = round_conditions_icon(rnd, round_names)
+        if not icon:
+            return ""
+        return f'<span class="cond" title="{esc(label)}">{icon}</span>'
+
     medal_rounds = stats["medal_rounds"]
     best_round = stats["best_round"]
 
     rows_html = ""
     if not history:
-        rows_html = '      <tr><td colspan="6">No results recorded yet this season.</td></tr>\n'
+        rows_html = '      <tr><td colspan="7">No results recorded yet this season.</td></tr>\n'
     else:
         for rnd, cat_pos, overall_pos, points, is_ap, status, laps, time_sec in history:
             if is_ap or points == AP_MARKER:
@@ -534,6 +668,7 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
                 best_tag=best_tag,
                 location=location_label(rnd),
                 date=date_label(rnd),
+                conditions=conditions_cell(rnd),
                 cat_pos=esc(cat_pos if cat_pos is not None else ""),
                 medal=medal_html,
                 points=points_disp,
@@ -565,6 +700,8 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
             )
         compare_block += "</div>"
 
+    team_links_block = render_team_links_block(club, db_stem)
+
     def fmt(v, decimals=1):
         if v is None:
             return "—"
@@ -586,6 +723,7 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
         total_laps=stats["total_laps"] if stats["total_laps"] else "—",
         total_time=format_duration(stats["total_time_seconds"]),
         compare_block=compare_block,
+        team_links_block=team_links_block,
         rows=rows_html,
         iframe_resize_script=IFRAME_RESIZE_SCRIPT,
     )
@@ -606,8 +744,8 @@ def main():
                     help="Number of rounds in the season (default: 11). Also used as the "
                          "'Full House' milestone threshold.")
     ap.add_argument("--rounds-file", default=None,
-                    help="Optional CSV mapping round number to name/venue/date "
-                         "(columns: round,name,venue,date — the same file used for "
+                    help="Optional CSV mapping round number to name/venue/date/conditions "
+                         "(columns: round,name,venue,date,conditions — the same file used for "
                          "set_round_names.py / rounds-template.csv). Shared across "
                          "all category DBs since a round is the same event for everyone.")
     args = ap.parse_args()
@@ -622,6 +760,7 @@ def main():
             summary = ", ".join(
                 f"R{r}={round_venue_label(r, round_names)}"
                 + (f" ({round_date_label(r, round_names)})" if round_names[r]["date"] else "")
+                + (f" [{round_names[r]['conditions']}]" if round_names[r].get("conditions") else "")
                 for r in sorted(round_names.keys())
             )
             print(f"Loaded {len(round_names)} round(s) from {args.rounds_file}: {summary}")
@@ -637,6 +776,8 @@ def main():
         if not db_path.exists():
             print(f"⚠️  WARNING: DB not found, skipping: {db_path}")
             continue
+
+        db_stem = db_path.stem  # e.g. "U8" from "U8.db" -- used to pick award links
 
         conn = sqlite3.connect(str(db_path))
         ensure_schema(conn, db_path.name)
@@ -662,7 +803,7 @@ def main():
 
             page_html = render_page(
                 race_number, firstname, surname, gender, club_name,
-                race_category, history, stats, round_names,
+                race_category, history, stats, round_names, db_stem,
             )
 
             out_file = riders_dir / f"{race_number}.html"

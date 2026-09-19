@@ -46,6 +46,13 @@ The --rounds flag still controls how many round columns are scored/shown
 (same meaning as in export_league_tables.py) — a season with fewer or more
 rounds than 12 just needs --rounds set accordingly and the rounds table
 populated to match.
+
+TEAM & CLUB AWARDS: index.html also shows an "Awards" section whenever an
+`.awards.json` cache is present in --outdir (written by
+export_team_awards_html.py — see that script's docstring). This script
+never writes that cache itself; it only reads it back (if present) each
+time it rebuilds index.html, so running the two generators in either order
+always leaves index.html showing whatever's actually been built so far.
 """
 
 import argparse
@@ -292,8 +299,11 @@ body.wmccl-league {
 .wmccl-league .breadcrumb { margin-bottom: 1rem; font-size: 0.9rem; }
 .wmccl-league .sponsors { display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: center; margin: 1rem 0 1.5rem; }
 .wmccl-league .sponsors img { max-height: 60px; max-width: 160px; }
-.wmccl-league .table-links { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0 1rem; }
-.wmccl-league .table-links li a { display: inline-block; background: var(--wmccl-header-bg); border-radius: 6px; padding: 0.4rem 0.8rem; text-decoration: none; font-size: 0.9rem; }
+.wmccl-league .index-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.4rem 0.75rem; margin: 0.5rem 0; }
+.wmccl-league .index-row + .index-row { border-top: 1px solid var(--wmccl-border); padding-top: 0.5rem; }
+.wmccl-league .index-row h2 { margin: 0; font-size: 1rem; white-space: nowrap; flex-shrink: 0; }
+.wmccl-league .table-links { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0; }
+.wmccl-league .table-links li a { display: inline-block; background: var(--wmccl-header-bg); border-radius: 6px; padding: 0.3rem 0.7rem; text-decoration: none; font-size: 0.85rem; }
 .wmccl-league .table-links li a:hover { background: #eef3f9; }
 .wmccl-league table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }
 .wmccl-league th, .wmccl-league td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--wmccl-border); white-space: nowrap; }
@@ -362,7 +372,7 @@ def render_sponsor_strip(sponsors: List[Dict[str, str]], assets_prefix: str) -> 
     """
     assets_prefix: relative path from the page to the outdir, e.g. "" for
     index.html (assets live at assets/sponsors/) or "../" for a page inside
-    tables/ (assets live at ../assets/sponsors/).
+    tables/ or awards/ (assets live at ../assets/sponsors/).
     """
     if not sponsors:
         return ""
@@ -474,9 +484,16 @@ def render_table_page(table_name: str, profile: str, rows: List[Dict],
 
 
 def render_index_page(manifest: Dict[str, Dict],
-                      sponsors: List[Dict[str, str]], site_title: str) -> str:
+                      sponsors: List[Dict[str, str]], site_title: str,
+                      awards: Optional[List[Dict[str, str]]] = None) -> str:
     sponsor_html = render_sponsor_strip(sponsors, "")
 
+    # Each category is one compact row: heading and its table links share a
+    # single line (flex row), rather than the heading sitting on its own
+    # line above a link list below it — cuts a lot of vertical space when
+    # there are 7+ profiles. The redundant standalone "League tables"
+    # heading that used to sit above all of these was dropped too (2026-09-19,
+    # Adam's request) — the page's own <h1> already says what this is.
     tables_html = ""
     for profile in PROFILE_ORDER:
         entries = {name: meta for name, meta in manifest.items() if meta.get("profile") == profile}
@@ -487,7 +504,7 @@ def render_index_page(manifest: Dict[str, Dict],
             f'<li><a href="tables/{esc(name)}.html">{esc(name)} ({meta.get("riders", 0)})</a></li>'
             for name, meta in sorted(entries.items())
         )
-        tables_html += f'<h2>{esc(label)}</h2><ul class="table-links">{links}</ul>'
+        tables_html += f'<div class="index-row"><h2>{esc(label)}</h2><ul class="table-links">{links}</ul></div>'
 
     # Any tables whose profile isn't in PROFILE_ORDER (shouldn't normally happen)
     leftover = {name: meta for name, meta in manifest.items() if meta.get("profile") not in PROFILE_ORDER}
@@ -496,7 +513,18 @@ def render_index_page(manifest: Dict[str, Dict],
             f'<li><a href="tables/{esc(name)}.html">{esc(name)} ({meta.get("riders", 0)})</a></li>'
             for name, meta in sorted(leftover.items())
         )
-        tables_html += f'<h2>Other</h2><ul class="table-links">{links}</ul>'
+        tables_html += f'<div class="index-row"><h2>Other</h2><ul class="table-links">{links}</ul></div>'
+
+    # Team & club awards — same one-line-per-heading treatment, populated
+    # from the .awards.json cache written by export_team_awards_html.py (if
+    # that script has been run at all; otherwise this row is simply omitted).
+    awards_html = ""
+    if awards:
+        award_links = "".join(
+            f'<li><a href="{esc(a["href"])}">{esc(a["label"])}</a></li>'
+            for a in awards
+        )
+        awards_html = f'<div class="index-row"><h2>Team &amp; Club Awards</h2><ul class="table-links">{award_links}</ul></div>'
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -509,8 +537,8 @@ def render_index_page(manifest: Dict[str, Dict],
 <body class="wmccl-league">
   <h1>{esc(site_title)}</h1>
   {sponsor_html}
-  <h2>League tables</h2>
   {tables_html if tables_html else '<p>No tables generated yet.</p>'}
+  {awards_html}
   <footer>WMCCL League Tables — generated by export_league_tables_html.py</footer>
   {IFRAME_RESIZE_SCRIPT}
 </body>
@@ -574,6 +602,7 @@ def main():
     manifest_path = outdir / ".manifest.json"
     rounds_cache_path = outdir / ".rounds.json"
     sponsors_cache_path = outdir / ".sponsors.json"
+    awards_cache_path = outdir / ".awards.json"
 
     tables_dir.mkdir(parents=True, exist_ok=True)
     css_dir.mkdir(parents=True, exist_ok=True)
@@ -655,7 +684,8 @@ def main():
 
     save_json(manifest_path, manifest)
 
-    index_html = render_index_page(manifest, sponsors_cache, args.site_title)
+    awards_cache = load_json(awards_cache_path, [])
+    index_html = render_index_page(manifest, sponsors_cache, args.site_title, awards=awards_cache)
     (outdir / "index.html").write_text(index_html, encoding="utf-8")
     print(f"\n  Wrote index.html  ({len(manifest)} table(s) total across all runs so far)")
 
