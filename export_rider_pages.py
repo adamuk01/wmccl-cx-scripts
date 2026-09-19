@@ -55,6 +55,23 @@ WHAT COUNTS AS A "REAL" RESULT:
     towards laps completed (they rode those laps) but not towards
     total race time (no reliable finish time exists for a DNF).
 
+ROUND NAMES / VENUES:
+    --rounds-file takes the SAME CSV used to populate each DB's `rounds`
+    table (see set_round_names.py / rounds-template.csv), with headers:
+        round,name,venue,date
+    Only 'round' and at least one of name/venue/date are required — any
+    of the four can be blank per-row. Older CSVs with just round,name
+    (or round,venue / round,location) still work too.
+
+    Each rider's results table shows two separate columns for this,
+    kept apart from the "Round" column so nothing is repeated:
+        - Location: the venue field (falls back to name if venue is
+          blank, e.g. for an older round,name-only CSV)
+        - Date: the date field
+    The round's "name" (e.g. an event name distinct from its venue) is
+    not shown on the rider page — it's only used on the league table
+    pages (export_league_tables_html.py) round tooltips/legend.
+
 USAGE:
     python3 export_rider_pages.py --db U8.db U10.db U12.db Youth.db \
         Women.db Masters.db Seniors.db \
@@ -177,19 +194,22 @@ def load_results_for_rider(conn: sqlite3.Connection, rider_id: int, rounds: int)
     return cur.fetchall()
 
 
-def load_round_names(path: Optional[str]) -> Dict[int, str]:
+def load_round_names(path: Optional[str]) -> Dict[int, Dict[str, str]]:
     """
-    Loads a simple CSV mapping round number -> race name/venue, e.g.:
-        round,name
-        1,Stratford
-        2,Cannock Chase
+    Loads the shared rounds CSV (same file used for set_round_names.py /
+    each DB's `rounds` table), with headers:
+        round,name,venue,date
 
-    Shared across all category DBs, since a round's venue is the same
-    event for every category that day. Returns {} if no file given.
+    Returns {round_number: {"name": ..., "venue": ..., "date": ...}}.
+    Any of name/venue/date may be blank on a given row. Older CSVs that
+    only have round,name (or round,venue / round,location) still work —
+    whichever of those columns is present is read as "name" and the
+    others default to "".
 
-    Column matching is case/whitespace-insensitive, and accepts 'name',
-    'venue' or 'location' for the race-name column, so a header like
+    Column matching is case/whitespace-insensitive, so a header like
     'Round,Location' or ' Round , Name ' still works.
+
+    Returns {} if no file given.
     """
     if not path:
         return {}
@@ -203,23 +223,22 @@ def load_round_names(path: Optional[str]) -> Dict[int, str]:
         fieldnames = reader.fieldnames or []
 
         # Map normalised (lowercase, stripped) header -> actual header text,
-        # so we can find "round" and "name"/"venue"/"location" regardless
-        # of case or stray whitespace in the CSV.
+        # so we can find "round" and "name"/"venue"/"date"/"location"
+        # regardless of case or stray whitespace in the CSV.
         normalised = {(fn or "").strip().lower(): fn for fn in fieldnames}
         round_key = normalised.get("round")
-        name_key = next(
-            (normalised[k] for k in ("name", "venue", "location") if k in normalised),
-            None,
-        )
+        name_key = normalised.get("name") or normalised.get("location")
+        venue_key = normalised.get("venue")
+        date_key = normalised.get("date")
 
-        if round_key is None or name_key is None:
-            print(f"⚠️  WARNING: rounds file '{p}' doesn't have recognisable "
-                  f"'round' and 'name'/'venue'/'location' columns.")
+        if round_key is None or not any([name_key, venue_key, date_key]):
+            print(f"⚠️  WARNING: rounds file '{p}' doesn't have a recognisable "
+                  f"'round' column plus at least one of name/venue/date/location.")
             print(f"    Headers found: {fieldnames}")
             print(f"    Continuing without race names.")
             return {}
 
-        names = {}
+        info = {}
         for row in reader:
             rnd_raw = (row.get(round_key) or "").strip()
             if not rnd_raw:
@@ -228,11 +247,37 @@ def load_round_names(path: Optional[str]) -> Dict[int, str]:
                 rnd = int(rnd_raw)
             except ValueError:
                 continue
-            race_name = (row.get(name_key) or "").strip()
-            if race_name:
-                names[rnd] = race_name
 
-    return names
+            entry = {
+                "name": (row.get(name_key) or "").strip() if name_key else "",
+                "venue": (row.get(venue_key) or "").strip() if venue_key else "",
+                "date": (row.get(date_key) or "").strip() if date_key else "",
+            }
+            if any(entry.values()):
+                info[rnd] = entry
+
+    return info
+
+
+def round_venue_label(rnd: int, round_names: Dict[int, Dict[str, str]]) -> str:
+    """
+    The "Location" cell for a round — just the venue field from the CSV.
+    Falls back to the name field if venue is blank (covers an older CSV
+    that only has round,name or round,location — no separate venue
+    column). Returns "—" if nothing is on file for this round.
+    """
+    info = round_names.get(rnd)
+    if not info:
+        return "—"
+    return info["venue"] or info["name"] or "—"
+
+
+def round_date_label(rnd: int, round_names: Dict[int, Dict[str, str]]) -> str:
+    """The "Date" cell for a round — just the date field from the CSV."""
+    info = round_names.get(rnd)
+    if not info:
+        return "—"
+    return info["date"] or "—"
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +429,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 
   <table>
     <thead>
-      <tr><th>Round</th><th>Location</th><th>Cat. position</th><th>Points</th><th>Status</th></tr>
+      <tr><th>Round</th><th>Location</th><th>Date</th><th>Cat. position</th><th>Points</th><th>Status</th></tr>
     </thead>
     <tbody>
 {rows}
@@ -395,12 +440,12 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
-ROW_TEMPLATE = '      <tr{row_class}><td>{round}{best_tag}</td><td>{location}</td><td>{cat_pos}{medal}</td><td>{points}</td><td>{status}</td></tr>\n'
+ROW_TEMPLATE = '      <tr{row_class}><td>{round}{best_tag}</td><td>{location}</td><td>{date}</td><td>{cat_pos}{medal}</td><td>{points}</td><td>{status}</td></tr>\n'
 
 
 def render_page(race_number: int, firstname: str, surname: str, gender: str,
                 club: str, category: str, history: List[Tuple], stats: Dict,
-                round_names: Dict[int, str]) -> str:
+                round_names: Dict[int, Dict[str, str]]) -> str:
     name = display_name(firstname, surname)
 
     gender_label = {"M": "Male", "F": "Female"}.get((gender or "").strip().upper(), esc(gender) or "—")
@@ -409,14 +454,17 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
         return f"Round {esc(rnd)}"
 
     def location_label(rnd) -> str:
-        return esc(round_names.get(rnd, "")) or "—"
+        return esc(round_venue_label(rnd, round_names))
+
+    def date_label(rnd) -> str:
+        return esc(round_date_label(rnd, round_names))
 
     medal_rounds = stats["medal_rounds"]
     best_round = stats["best_round"]
 
     rows_html = ""
     if not history:
-        rows_html = '      <tr><td colspan="5">No results recorded yet this season.</td></tr>\n'
+        rows_html = '      <tr><td colspan="6">No results recorded yet this season.</td></tr>\n'
     else:
         for rnd, cat_pos, overall_pos, points, is_ap, status, laps, time_sec in history:
             if is_ap or points == AP_MARKER:
@@ -440,6 +488,7 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
                 round=round_label(rnd),
                 best_tag=best_tag,
                 location=location_label(rnd),
+                date=date_label(rnd),
                 cat_pos=esc(cat_pos if cat_pos is not None else ""),
                 medal=medal_html,
                 points=points_disp,
@@ -511,8 +560,9 @@ def main():
                     help="Number of rounds in the season (default: 11). Also used as the "
                          "'Full House' milestone threshold.")
     ap.add_argument("--rounds-file", default=None,
-                    help="Optional CSV mapping round number to race name/venue "
-                         "(columns: round,name), e.g. '1,Stratford'. Shared across "
+                    help="Optional CSV mapping round number to name/venue/date "
+                         "(columns: round,name,venue,date — the same file used for "
+                         "set_round_names.py / rounds-template.csv). Shared across "
                          "all category DBs since a round is the same event for everyone.")
     args = ap.parse_args()
 
@@ -523,10 +573,14 @@ def main():
     round_names = load_round_names(args.rounds_file)
     if args.rounds_file:
         if round_names:
-            print(f"Loaded {len(round_names)} race name(s) from {args.rounds_file}: "
-                  f"{', '.join(f'R{r}={n}' for r, n in sorted(round_names.items()))}")
+            summary = ", ".join(
+                f"R{r}={round_venue_label(r, round_names)}"
+                + (f" ({round_date_label(r, round_names)})" if round_names[r]["date"] else "")
+                for r in sorted(round_names.keys())
+            )
+            print(f"Loaded {len(round_names)} round(s) from {args.rounds_file}: {summary}")
         else:
-            print(f"⚠️  No race names loaded from {args.rounds_file} — pages will show plain 'Round N'.")
+            print(f"⚠️  No round info loaded from {args.rounds_file} — pages will show plain 'Round N'.")
 
     admin_rows = []  # race_number, name, club, category, source_db  -- ADMIN ONLY, do not publish
     written = 0

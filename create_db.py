@@ -6,7 +6,8 @@ Create multiple SQLite databases for a CX league: one DB per race entity.
 
 Each database gets:
   - riders       (identity + category)
-  - results      (one row per rider per round)
+  - results      (one row per rider per round, incl. laps_completed / finish_time_seconds)
+  - rounds       (round_number, name, venue, date -- for HTML league tables)
   - vw_rider_round_matrix  (spreadsheet-style: r1_points, r1_AP, ..., rN_points, rN_AP)
   - vw_rider_stats         (auto averages & totals)
   - vw_ranked_results      (per-rider ranking of results by points)
@@ -86,6 +87,15 @@ def create_core_tables(conn):
 
         CREATE INDEX IF NOT EXISTS idx_results_rider_round
             ON results(rider_id, round);
+
+        -- Round names/venues/dates for the season (used by the HTML league
+        -- tables + rider pages; the CSV export doesn't need this).
+        CREATE TABLE IF NOT EXISTS rounds (
+            round_number INTEGER PRIMARY KEY,
+            name TEXT,
+            venue TEXT,
+            date TEXT
+        );
     """)
 
 def create_pivot_view(conn, max_rounds):
