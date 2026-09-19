@@ -45,7 +45,7 @@ team_points_multi.py Women.db Seniors.db Masters.db Youth.db \
   --exclude-club "No Club/Team" \
   > "$OUTDIR/adult_team.csv"
 
-echo "Running Participation Award (Completed rides - FIN only) for the Mick Ives Participation Award"
+echo "Running Participation Award (Completed rides + Average Points rounds) for the Mick Ives Participation Award"
 
 club_completed_rides_multi.py U8.db U10.db U12.db Women.db Seniors.db Masters.db Youth.db \
   --exclude-club "No Club/Team" \

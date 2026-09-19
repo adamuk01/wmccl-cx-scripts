@@ -8,7 +8,7 @@ from team_awards_scoring import compute_completed_rides_multi
 
 def main():
     p = argparse.ArgumentParser(
-        description="Count COMPLETED rides (FIN) per club across multiple category DBs (CSV output)."
+        description="Count rides counted for participation (FIN + AP) per club across multiple category DBs (CSV output)."
     )
     p.add_argument("db", nargs="+", help="One or more SQLite DB files")
     p.add_argument("--exclude-club", action="append", default=["No Club/Team"], help="Exclude club (repeatable)")

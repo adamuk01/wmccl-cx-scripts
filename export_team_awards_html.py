@@ -25,7 +25,16 @@ THE THREE AWARDS (names confirmed with Adam 2026-09-19):
                                           (Women + Seniors + Masters + Youth)
   - "U12 team competition"             — youth teams, U12s and below
                                           (U8 + U10 + U12)
-  - "Mick Ives Participation Award"    — completed rides, every category
+  - "Mick Ives Participation Award"    — rides counted per club, every
+                                          category: a finish (status='FIN')
+                                          or a round where the rider was
+                                          awarded Average Points instead of
+                                          racing (status='AP') both count
+                                          — changed 2026-09-19 so clubs that
+                                          host events (whose own riders are
+                                          more often marshalling/organising
+                                          and on AP that round) aren't
+                                          disadvantaged.
 
 OUTPUT (into --outdir, same site as export_league_tables_html.py /
 export_rider_pages.py):
@@ -88,8 +97,10 @@ AWARD_META = {
     "participation": {
         "filename": "participation.html",
         "title": "Mick Ives Participation Award",
-        "value_label": "Completed Rides",
-        "description": "Total completed (finished, non-average-points) rides per club, across every category.",
+        "value_label": "Rides Counted",
+        "description": "Total rides counted per club, across every category — finishes plus rounds where a "
+                        "rider was awarded Average Points (e.g. while marshalling or organising at their own "
+                        "club's round) instead of racing, so clubs that host events aren't disadvantaged.",
     },
 }
 
@@ -200,7 +211,7 @@ def main():
     print("Computing U12 Team Competition (U12 and below)...")
     u12_team_rows = compute_team_points_multi(youth_dbs, top_n=args.top_n, exclude_clubs=args.exclude_club)
 
-    print("Computing Mick Ives Participation Award (all categories)...")
+    print("Computing Mick Ives Participation Award (all categories, finishes + AP rounds)...")
     participation_rows = compute_completed_rides_multi(all_dbs, exclude_clubs=args.exclude_club)
 
     results_by_key = {

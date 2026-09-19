@@ -8,7 +8,7 @@ counterpart to league_scoring.py's rider-level scoring.
 This module is imported by BOTH the CSV scripts (team_points_multi.py,
 club_completed_rides_multi.py) and the new HTML awards page generator
 (export_team_awards_html.py), so all three outputs can never disagree on
-a club's points or completed-rides count. Extracted 2026-09-19 from
+a club's points or rides-counted total. Extracted 2026-09-19 from
 team_points_multi.py / club_completed_rides_multi.py, behaviour-preserving
 (CSV output verified byte-identical before/after for both scripts).
 
@@ -171,14 +171,22 @@ def compute_completed_rides_multi(
     exclude_clubs: Optional[List[str]] = None,
 ) -> List[Tuple]:
     """
-    Count COMPLETED rides (status='FIN', non-AP) per club across multiple
+    Count rides counted towards participation per club across multiple
     DBs — the Mick Ives Participation Award calculation.
+
+    Counts BOTH completed races (status='FIN') AND rounds where the rider
+    was awarded Average Points (status='AP', is_ap=1) instead of racing.
+    AP is commonly given to a club's own riders/volunteers who are
+    marshalling or organising their own round rather than racing it, so
+    excluding AP rows (the original behaviour) systematically
+    disadvantaged clubs that host events. Changed 2026-09-19 at Adam's
+    request — AP rounds now count the same as a finish for this award.
 
     Schema assumed:
       riders(id, club_name, ...)
       results(rider_id, round, status, is_ap, ...)
 
-    Returns [(club_name, completed_rides), ...] ordered by completed_rides
+    Returns [(club_name, rides_counted), ...] ordered by rides_counted
     desc, club_name asc.
     """
 
@@ -204,7 +212,10 @@ def compute_completed_rides_multi(
                 f"Tables present: {', '.join(sorted(tables))}"
             )
 
-    # Build UNION of all completed rides
+    # Build UNION of all rides that count towards participation: a real
+    # finish, or a round where the rider was awarded Average Points
+    # (status='AP') instead of racing — see docstring above for why AP
+    # counts here.
     union_parts = []
     for a in aliases:
         union_parts.append(f"""
@@ -212,8 +223,7 @@ def compute_completed_rides_multi(
                 TRIM(r.club_name) AS club_name
             FROM {a}.results res
             JOIN {a}.riders r ON r.id = res.rider_id
-            WHERE res.status = 'FIN'
-              AND COALESCE(res.is_ap, 0) = 0
+            WHERE res.status IN ('FIN', 'AP')
         """)
 
     union_sql = "\nUNION ALL\n".join(union_parts)
@@ -225,13 +235,13 @@ def compute_completed_rides_multi(
         params.extend(exclude_clubs)
 
     sql = f"""
-    WITH AllFinished AS (
+    WITH AllCounted AS (
         {union_sql}
     )
     SELECT
         club_name,
         COUNT(*) AS completed_rides
-    FROM AllFinished
+    FROM AllCounted
     {exclude_clause}
     GROUP BY club_name
     HAVING COUNT(*) > 0
