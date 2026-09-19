@@ -374,6 +374,50 @@ def compute_stats(history: List[Tuple], *, season_length: int,
 # HTML rendering
 # ---------------------------------------------------------------------------
 
+# Auto-resizes the iframe this page is embedded in (e.g. a WordPress page
+# with an <iframe src="/rider_pages/riders/..."> so the page keeps the
+# site's header/footer). Only does anything when the page is actually
+# loaded inside a SAME-ORIGIN iframe (window.frameElement is only
+# reachable same-origin) — visiting the page directly, or a cross-origin
+# embed, leaves it a harmless no-op. Re-checks on load, on pageshow (this
+# is the one that matters for browser back/forward — a back-navigation
+# restores the page without firing 'load', so without a pageshow handler
+# the iframe gets stuck at whatever height the page you navigated away
+# from needed), on window resize, and shortly after load to catch
+# late-loading fonts/images shifting the page height.
+#
+# Shrinking is a special case: document.documentElement.scrollHeight is
+# defined as never smaller than the iframe's OWN current viewport height,
+# so if we don't first collapse the iframe back towards zero before
+# re-measuring, going from a tall page to a shorter one would read the
+# still-inflated old height back as "content height" and the iframe would
+# never shrink. Resetting to 0px immediately before measuring fixes that.
+#
+# That reset is itself a real height change, so it triggers this script's
+# own 'resize' listener (the iframe's own viewport just changed) — the
+# `busy` guard stops that from re-entering resize() and looping.
+IFRAME_RESIZE_SCRIPT = """<script>
+(function () {
+  try {
+    if (window.frameElement) {
+      var busy = false;
+      var resize = function () {
+        if (busy) return;
+        busy = true;
+        window.frameElement.style.height = '0px';
+        window.frameElement.style.height = document.documentElement.scrollHeight + 'px';
+        setTimeout(function () { busy = false; }, 50);
+      };
+      window.addEventListener('load', resize);
+      window.addEventListener('pageshow', resize);
+      window.addEventListener('resize', resize);
+      setTimeout(resize, 300);
+      resize();
+    }
+  } catch (e) { /* cross-origin or no iframe context - ignore */ }
+})();
+</script>"""
+
 PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -436,6 +480,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
     </tbody>
   </table>
 </div>
+{iframe_resize_script}
 </body>
 </html>
 """
@@ -542,6 +587,7 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
         total_time=format_duration(stats["total_time_seconds"]),
         compare_block=compare_block,
         rows=rows_html,
+        iframe_resize_script=IFRAME_RESIZE_SCRIPT,
     )
 
 
