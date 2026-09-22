@@ -16,7 +16,7 @@ produce-lt.sh — e.g. 7 invocations for a full season update:
   python3 export_league_tables_html.py --db Youth.db   --profile youth   --outdir league_html
   python3 export_league_tables_html.py --db Women.db   --profile women   --outdir league_html
   python3 export_league_tables_html.py --db Masters.db --profile masters --outdir league_html
-  python3 export_league_tables_html.py --db Seniors.db --profile seniors --outdir league_html \
+  python3 export_league_tables_html.py --db Seniors.db --profile seniors --outdir league_html \\
       --sponsor-logo logo1.png --sponsor-logo logo2.png --sponsor-logo logo3.png
 
 Each invocation writes that profile's table pages and then REBUILDS
@@ -31,12 +31,15 @@ OUTPUT (into --outdir, "league_html" in the examples above):
   tables/<table>.html   one page per league table (sponsor strip at the top,
                          then the table itself); each rider name links to
                          ../riders/<race_number>.html
+  .htaccess             browser-cache headers — see BROWSER CACHING below.
+                         Upload it with the rest of the folder (it's a
+                         dotfile, so some FTP clients hide it by default).
 
 IMPORTANT: rider pages themselves are NOT built by this script — that's
 export_rider_pages.py's job (kept deliberately separate). For the links to
 resolve, run both scripts with the SAME --outdir, e.g.:
 
-  python3 export_rider_pages.py --db U8.db ... Seniors.db \
+  python3 export_rider_pages.py --db U8.db ... Seniors.db \\
       --outdir league_html --rounds 12 --rounds-file rounds.csv
 
 ROUND NAMES: read from the DB's `rounds` table (round_number, name, venue,
@@ -69,9 +72,69 @@ for the currently-defined profiles — but if a future profile change ever
 reintroduces two profiles sharing a table_name, it WILL reproduce this same
 failure mode. Don't key the manifest by bare table_name without re-reading
 this note.
+
+WIDE-TABLE HORIZONTAL SCROLL (added 2026-09-22): league table pages can have
+~19-20 columns (Pos, Name, No., Category, Club, 1BX, Best N, Avg, one column
+per round up to 11, AP-rounds note), all `white-space: nowrap`, easily
+1100px+ of natural width. Rather than letting that overflow the page (and
+get silently clipped by whatever embeds it — confirmed 2026-09-22 to be a
+WordPress theme container only ~611-660px wide on the live wmccl.co.uk
+<iframe> embed at the time, well under even this page's own max-width),
+SITE_CSS sets `display: block; overflow-x: auto;` directly on
+`.wmccl-league table` so the table scrolls horizontally within its own
+box. This is a CSS-only fix (no extra wrapper <div> in the page markup),
+which matters because it means re-running this generator for just ONE
+profile — which always rewrites the shared css/site.css — fixes every
+ALREADY-published table page too, without needing to regenerate or
+re-upload all of them; only css/site.css actually needs to reach the live
+site for this fix to take effect. Confirmed necessary 2026-09-22: Adam
+found a real Shimano Lazer WMCCL 2026 JunM table cut off after R4 on
+https://wmccl.co.uk/new-league-tables/; inspecting that live page showed
+the table needing 1133px against a 611-661px iframe container. See
+claude/html-league-tables-plan.md for the earlier (2026-09-19) diagnosis
+of this same class of issue, and for the follow-up the same day: once
+Adam switched that WordPress page onto a wider ("Full Width") template,
+the iframe itself grew to 1200px+, and this page's OWN max-width (980px
+at the time) became the new bottleneck — see the `body.wmccl-league`
+max-width comment below for that fix.
+(Caveat added with the cache-busting below: pages published BEFORE
+2026-09-22's cache-busting change link plain `css/site.css` with no ?v=,
+so they still pick up a new site.css — but browsers may keep serving them
+the old cached copy for a while. Pages generated from now on don't have
+that problem.)
+
+BROWSER CACHING (added 2026-09-22): the site is re-uploaded weekly, and a
+static host with no Cache-Control header lets browsers guess how long to
+reuse a cached copy (typically ~10% of the time since the file last
+changed — a week-old site.css can be reused for most of a day), so riders
+could see last week's table, or this week's HTML styled with last week's
+CSS. Two independent fixes, each covering the other's gaps:
+
+  1. CSS cache-busting: every page links `css/site.css?v=<CSS_VERSION>`,
+     where CSS_VERSION is a short hash of SITE_CSS. Change the CSS and the
+     URL changes, so browsers MUST fetch the new file — works on any host,
+     no server config needed. The hash is of the CSS content (not a
+     timestamp), so an unchanged stylesheet keeps the same URL week to
+     week and stays cached. export_team_awards_html.py imports CSS_VERSION
+     from here so all pages agree. Rider pages use inline <style>, so they
+     don't need this.
+  2. .htaccess (HTACCESS_CONTENT / write_htaccess()): sends
+     `Cache-Control: no-cache` for .html/.css/.json — meaning "revalidate
+     before reuse", NOT "don't cache": an unchanged file costs a tiny 304
+     Not Modified, a changed one is fetched fresh. Sponsor images get a
+     1-week cache. Only takes effect on Apache/LiteSpeed hosts with
+     mod_headers (the <IfModule> guard makes it a harmless no-op
+     otherwise, rather than a 500 error). nginx ignores .htaccess
+     entirely — there it would need adding to the server config. A
+     WordPress caching plugin or CDN (e.g. Cloudflare) in front of the site
+     can still hold its own copy regardless — purge it after uploading, or
+     exclude this folder.
+  <meta http-equiv="Cache-Control"> tags were deliberately NOT used —
+  modern browsers ignore them for HTTP caching.
 """
 
 import argparse
+import hashlib
 import html
 import json
 import shutil
@@ -305,7 +368,22 @@ body.wmccl-league {
   font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
   color: var(--wmccl-fg);
   background: var(--wmccl-bg);
-  max-width: 980px;
+  /* Widened from 980px to 1400px (2026-09-22). 980px was a reasonable
+     default while the WordPress embed's own container was narrow, but
+     Adam has since switched the New League Tables page onto the same
+     "Full Width" template the Results page uses (no sidebar), so the
+     surrounding <iframe> can now be 1200px+ wide on a normal desktop
+     window. With the old 980px cap still in place, this page centred
+     itself inside that wider iframe with ~100px+ of dead space on each
+     side instead of using the room — confirmed live on wmccl.co.uk
+     2026-09-22 (iframe 1250px, this body still rendering at 980px with
+     119px side margins). 1400px comfortably covers even an 11-round
+     table's ~1130px natural width with room to spare, without letting
+     the page stretch fully edge-to-edge on a very wide monitor. The
+     table's own overflow-x:auto (see .wmccl-league table below) is
+     still what saves a narrower container/phone — this change only
+     helps once there's genuinely more room to use. */
+  max-width: 1400px;
   margin: 0 auto;
   padding: 1rem;
 }
@@ -321,7 +399,56 @@ body.wmccl-league {
 .wmccl-league .table-links { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0; }
 .wmccl-league .table-links li a { display: inline-block; background: var(--wmccl-header-bg); border-radius: 6px; padding: 0.3rem 0.7rem; text-decoration: none; font-size: 0.85rem; }
 .wmccl-league .table-links li a:hover { background: #eef3f9; }
-.wmccl-league table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }
+.wmccl-league .table-scroll-hint {
+  font-size: 0.8rem;
+  color: var(--wmccl-muted);
+  margin: -0.5rem 0 0.5rem;
+}
+/*
+ * Wide-table horizontal scroll (added 2026-09-22). A league table can have
+ * ~19-20 columns (Pos, Name, No., Category, Club, 1BX, Best N, Avg, one
+ * per round up to 11, AP rounds), all white-space:nowrap, and easily needs
+ * 1100px+ of natural width. The page (max-width: 980px) is already
+ * narrower than that on a full desktop browser, and when this site is
+ * embedded via <iframe> in the WMCCL WordPress site the iframe's own
+ * container is narrower still (confirmed 2026-09-22: ~611-660px on the
+ * live wmccl.co.uk theme) — so without this, the table just gets clipped
+ * by the iframe with no way to see the missing columns.
+ *
+ * `display: block` on the <table> element itself (its <thead>/<tbody>/
+ * <tr>/<td> children keep their own default table-row-group/table-row/
+ * table-cell display — that's set on THEM by the browser's UA stylesheet,
+ * not inherited from the table's display value) turns the table into an
+ * ordinary block box that `overflow-x: auto` can scroll, without needing
+ * an extra wrapper <div> around every generated page. That matters here
+ * specifically because it means fixing this file's CSS output and
+ * re-running the generator (which always rewrites css/site.css) makes
+ * every ALREADY-published table page scrollable too — they all link to
+ * this shared stylesheet and don't need to be regenerated themselves.
+ *
+ * Trade-off, noted deliberately rather than missed: setting overflow-x to
+ * anything but 'visible' forces the browser to also compute overflow-y as
+ * 'auto' instead of 'visible' (a CSS spec quirk, confirmed live 2026-09-22),
+ * which makes the <table> itself the nearest scrolling ancestor for the
+ * sticky <thead><th>. Since the table's height is never constrained,
+ * nothing actually scrolls vertically inside it, so the sticky header
+ * quietly becomes a no-op instead of tracking the page scroll — not a
+ * visible bug, just a lost nicety, and only for a table with enough rows
+ * to run off-screen vertically (none currently do). Deliberately not
+ * "fixed" with a fixed/vh max-height + its own overflow-y:auto (which
+ * would restore real stickiness) because that height would be measured
+ * before the WordPress iframe's auto-resize script has settled, risking a
+ * shrink feedback loop against IFRAME_RESIZE_SCRIPT below.
+ */
+.wmccl-league table {
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.9rem;
+}
 .wmccl-league th, .wmccl-league td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--wmccl-border); white-space: nowrap; }
 .wmccl-league th { background: var(--wmccl-header-bg); position: sticky; top: 0; }
 .wmccl-league tbody tr:nth-child(even) { background: var(--wmccl-stripe); }
@@ -335,7 +462,45 @@ body.wmccl-league {
 .wmccl-league .empty-cell { color: #ccc; }
 .wmccl-league .ap-note { color: #888; font-size: 0.85rem; }
 .wmccl-league footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--wmccl-border); font-size: 0.8rem; color: var(--wmccl-muted); }
+@media (max-width: 700px) {
+  .wmccl-league .table-scroll-hint { display: block; }
+}
 """
+
+# Cache-busting version for css/site.css (see BROWSER CACHING in the module
+# docstring). A short content hash, so it only changes when SITE_CSS itself
+# changes — an unchanged stylesheet keeps the same URL and stays cached.
+# Imported by export_team_awards_html.py so every page agrees.
+CSS_VERSION = hashlib.sha1(SITE_CSS.encode("utf-8")).hexdigest()[:10]
+
+# Written to <outdir>/.htaccess on every run (see BROWSER CACHING in the
+# module docstring). Apache/LiteSpeed only; harmless no-op elsewhere thanks
+# to <IfModule>. Also written by export_team_awards_html.py (imported from
+# here). export_rider_pages.py doesn't write it: rider pages must share this
+# --outdir anyway (table pages link ../riders/), and .htaccess covers every
+# subfolder beneath it, riders/ included.
+HTACCESS_CONTENT = """# Generated by the WMCCL HTML export scripts - regenerated on every run,
+# so edit HTACCESS_CONTENT in the scripts rather than this file.
+#
+# Pages, CSS and JSON: browsers must check with the server before reusing a
+# cached copy ("no-cache" = revalidate, not "never cache"). An unchanged file
+# costs a tiny "304 Not Modified"; a changed one is fetched fresh, so riders
+# always see this week's tables without needing to refresh.
+<IfModule mod_headers.c>
+  <FilesMatch "\\.(html?|css|json)$">
+    Header set Cache-Control "no-cache, must-revalidate"
+  </FilesMatch>
+  # Sponsor logos and other images rarely change - cache for a week.
+  <FilesMatch "\\.(png|jpe?g|gif|svg|webp|ico)$">
+    Header set Cache-Control "public, max-age=604800"
+  </FilesMatch>
+</IfModule>
+"""
+
+
+def write_htaccess(outdir: Path) -> None:
+    (outdir / ".htaccess").write_text(HTACCESS_CONTENT, encoding="utf-8")
+
 
 # Auto-resizes the iframe this page is embedded in (e.g. a WordPress page
 # with an <iframe src="/league_html/..."> so the page keeps the site's
@@ -361,6 +526,25 @@ body.wmccl-league {
 # That reset is itself a real height change, so it triggers this script's
 # own 'resize' listener (the iframe's own viewport just changed) — the
 # `busy` guard stops that from re-entering resize() and looping.
+#
+# SCROLL-INTO-VIEW ON NAVIGATION (added 2026-09-22): Adam reported that
+# clicking a rider's name from partway down a long table opened the rider
+# page correctly, but left the browser scrolled to the BOTTOM of the outer
+# WordPress page — you had to scroll up to actually see it. Cause: the
+# outer page's scroll position is whatever it was on the PREVIOUS page
+# inside the iframe (wherever Adam had scrolled to find that rider's row);
+# once the iframe resizes to the NEW page's height (often shorter than a
+# big table), that old scroll position can end up below the iframe
+# entirely — in blank space or the WordPress footer — with nothing
+# telling the browser to move. Fix: on 'load' specifically (a genuine new
+# page in the iframe — not 'pageshow', which also fires on a back/forward
+# restore where the outer page's own scroll position is already correct
+# and shouldn't be disturbed, and not 'resize', which fires on ordinary
+# window resizing), scroll the outer page so the iframe's top is back in
+# view. Skipped on the very first page load in a given browser tab (via a
+# sessionStorage flag) so a visitor simply arriving at the page doesn't
+# get an unexpected jump — it only fires on navigations that happen AFTER
+# that first load, which is exactly the reported case.
 IFRAME_RESIZE_SCRIPT = """<script>
 (function () {
   try {
@@ -373,7 +557,15 @@ IFRAME_RESIZE_SCRIPT = """<script>
         window.frameElement.style.height = document.documentElement.scrollHeight + 'px';
         setTimeout(function () { busy = false; }, 50);
       };
-      window.addEventListener('load', resize);
+      window.addEventListener('load', function () {
+        resize();
+        try {
+          if (sessionStorage.getItem('wmccl_iframe_seen')) {
+            window.frameElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+          sessionStorage.setItem('wmccl_iframe_seen', '1');
+        } catch (e) { /* storage blocked (private browsing etc.) - ignore */ }
+      });
       window.addEventListener('pageshow', resize);
       window.addEventListener('resize', resize);
       setTimeout(resize, 300);
@@ -471,7 +663,7 @@ def render_table_page(table_name: str, profile: str, rows: List[Dict],
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(table_name)} — WMCCL League Table</title>
-<link rel="stylesheet" href="../css/site.css">
+<link rel="stylesheet" href="../css/site.css?v={CSS_VERSION}">
 </head>
 <body class="wmccl-league">
   <p class="breadcrumb"><a href="../index.html">← All categories</a></p>
@@ -479,7 +671,8 @@ def render_table_page(table_name: str, profile: str, rows: List[Dict],
   <h1>{esc(table_name)}</h1>
   <p class="ap-note">Best {best_n} of {rounds} rounds count. Points shown in <em>italics</em> are AP (average points).</p>
   {rounds_legend_html}
-  <table>
+  <p class="table-scroll-hint" id="table-scroll-hint">Scroll sideways to see all {rounds} rounds →</p>
+  <table id="league-table">
     <thead>
       <tr>
         <th>Pos</th><th>Name</th><th>No.</th><th>Category</th><th>Club</th><th>1BX</th>
@@ -493,6 +686,22 @@ def render_table_page(table_name: str, profile: str, rows: List[Dict],
     </tbody>
   </table>
   <footer>WMCCL League Tables — generated by export_league_tables_html.py</footer>
+  <script>
+  (function () {{
+    // Only show the "scroll sideways" hint when the table actually needs
+    // it (its content is wider than the box it's rendered in) — on a wide
+    // enough screen/container a short table (few rounds so far, early
+    // season) fits with nothing to scroll, and the hint would be
+    // pointless clutter there.
+    try {{
+      var t = document.getElementById('league-table');
+      var hint = document.getElementById('table-scroll-hint');
+      if (t && hint && t.scrollWidth <= t.clientWidth) {{
+        hint.style.display = 'none';
+      }}
+    }} catch (e) {{ /* ignore */ }}
+  }})();
+  </script>
   {IFRAME_RESIZE_SCRIPT}
 </body>
 </html>
@@ -548,7 +757,7 @@ def render_index_page(manifest: Dict[str, Dict],
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(site_title)}</title>
-<link rel="stylesheet" href="css/site.css">
+<link rel="stylesheet" href="css/site.css?v={CSS_VERSION}">
 </head>
 <body class="wmccl-league">
   <h1>{esc(site_title)}</h1>
@@ -664,6 +873,8 @@ def main():
 
     # Shared CSS (always rewritten — cheap, keeps it current if the script changes)
     (css_dir / "site.css").write_text(SITE_CSS, encoding="utf-8")
+    # Browser-cache headers (see BROWSER CACHING in the module docstring)
+    write_htaccess(outdir)
 
     tables = profile_tables(args.profile)
     manifest = load_json(manifest_path, {})
@@ -673,7 +884,7 @@ def main():
     print(f"Rounds shown: 1..{args.rounds}")
     print(f"Averages computed up to round: {upto_round} (max in DB was {max_round})")
     print(f"Best {args.best} scoring")
-    print(f"Output dir: {outdir}\n")
+    print(f"Output dir: {outdir}  (css version {CSS_VERSION})\n")
 
     for table_name, cat_list in tables.items():
         if cat_list == ["*"]:

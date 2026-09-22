@@ -589,6 +589,18 @@ def compute_stats(history: List[Tuple], pace_grades: Dict[int, Optional[float]],
 # That reset is itself a real height change, so it triggers this script's
 # own 'resize' listener (the iframe's own viewport just changed) — the
 # `busy` guard stops that from re-entering resize() and looping.
+#
+# SCROLL-INTO-VIEW ON NAVIGATION (added 2026-09-22, identical to the copy
+# in export_league_tables_html.py — see that file's comment for the full
+# story): clicking into a rider page from partway down a long league
+# table left the browser scrolled to the bottom of the outer WordPress
+# page, since the outer page's scroll position doesn't move on its own
+# when the iframe navigates to a new (often shorter) page. On 'load'
+# specifically (not 'pageshow', which also covers a back/forward restore
+# where the outer scroll position is already correct; not 'resize'),
+# scroll the outer page so the iframe's top is back in view — skipped on
+# the very first page load in a tab (sessionStorage flag) so a normal
+# arrival at the page doesn't jump unexpectedly.
 IFRAME_RESIZE_SCRIPT = """<script>
 (function () {
   try {
@@ -601,13 +613,50 @@ IFRAME_RESIZE_SCRIPT = """<script>
         window.frameElement.style.height = document.documentElement.scrollHeight + 'px';
         setTimeout(function () { busy = false; }, 50);
       };
-      window.addEventListener('load', resize);
+      window.addEventListener('load', function () {
+        resize();
+        try {
+          if (sessionStorage.getItem('wmccl_iframe_seen')) {
+            window.frameElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+          sessionStorage.setItem('wmccl_iframe_seen', '1');
+        } catch (e) { /* storage blocked (private browsing etc.) - ignore */ }
+      });
       window.addEventListener('pageshow', resize);
       window.addEventListener('resize', resize);
       setTimeout(resize, 300);
       resize();
     }
   } catch (e) { /* cross-origin or no iframe context - ignore */ }
+})();
+</script>"""
+
+# Rider pages are linked from several different places — a specific league
+# table row, an award page, potentially others later — so there's no single
+# fixed "came from" page to hard-code a breadcrumb link to (unlike the
+# league table pages' "← All categories", which always goes to the same
+# index.html). Added 2026-09-22 at Adam's request: rider pages had no way
+# back at all. Rather than guessing, the "← Back" link uses the browser's
+# own history to return to WHICHEVER page actually linked here — a table,
+# an award page, wherever — via history.back(), which (same as a real
+# browser Back button) navigates just this iframe back to its previous
+# page, consistent with the existing back/forward handling in
+# IFRAME_RESIZE_SCRIPT above. Only wired up when there's actually
+# something to go back to (history.length > 1); otherwise the link's
+# plain href to ../index.html (the season hub) is left as a sensible
+# fallback for a rider page opened directly (e.g. a bookmark or a shared
+# link, not navigated to from within the site).
+BACK_LINK_SCRIPT = """<script>
+(function () {
+  try {
+    var link = document.getElementById('wmccl-back-link');
+    if (link && window.history && history.length > 1) {
+      link.addEventListener('click', function (e) {
+        e.preventDefault();
+        history.back();
+      });
+    }
+  } catch (e) { /* ignore */ }
 })();
 </script>"""
 
@@ -650,10 +699,12 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   .wmccl-rider .pace-trend.down {{ background: #f5f5f5; color: #555; }}
   .wmccl-rider .team-links {{ margin: 0 0 1.25rem; font-size: 0.9rem; color: #444; }}
   .wmccl-rider .team-links a {{ margin-right: 0.75rem; }}
+  .wmccl-rider .breadcrumb {{ margin: 0 0 0.75rem; font-size: 0.9rem; }}
 </style>
 </head>
 <body>
 <div class="wmccl-rider">
+  <p class="breadcrumb"><a href="../index.html" id="wmccl-back-link">← Back</a></p>
   <h1>#{race_number} — {name}</h1>
   <div class="meta">{club} &middot; {gender_label} &middot; {category}</div>
 
@@ -687,6 +738,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   </table>
 </div>
 {iframe_resize_script}
+{back_link_script}
 </body>
 </html>
 """
@@ -884,6 +936,7 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
         team_links_block=team_links_block,
         rows=rows_html,
         iframe_resize_script=IFRAME_RESIZE_SCRIPT,
+        back_link_script=BACK_LINK_SCRIPT,
     )
 
 
@@ -1017,4 +1070,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

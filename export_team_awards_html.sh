@@ -25,7 +25,7 @@ mkdir -p league_html
 echo "Running Team & Club Awards pages (Team Competition, U12 Team Competition, Mick Ives Participation Award)"
 export_team_awards_html.py --outdir league_html \
       --top-n 6 \
-      --exclude-club "No Club/Team"
+      --exclude-club "No Club or Team"
 
 chmod -R 777 league_html
 

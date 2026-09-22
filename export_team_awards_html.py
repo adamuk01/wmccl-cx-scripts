@@ -45,6 +45,9 @@ export_rider_pages.py):
                           (and by this script itself) so index.html always
                           shows an "Awards" section once this has been run,
                           regardless of which generator runs last.
+  .htaccess              browser-cache headers (see export_league_tables_html.py's
+                          BROWSER CACHING note) — written here too so this
+                          script works standalone.
 
 This script also rewrites index.html itself (using the SAME
 render_index_page() as export_league_tables_html.py, imported from it) so
@@ -52,6 +55,11 @@ the Awards section appears immediately, without needing a table script
 re-run. It reads back whatever .manifest.json / .sponsors.json already
 exist in --outdir so it doesn't blank out tables or sponsors that were
 already there.
+
+CSS CACHE-BUSTING (2026-09-22): award pages link the stylesheet as
+`../css/site.css?v=<CSS_VERSION>` — CSS_VERSION is imported from
+export_league_tables_html.py so every page in the site always points at
+the same version of the shared stylesheet.
 """
 
 import argparse
@@ -60,6 +68,7 @@ from typing import Dict, List, Tuple
 
 from team_awards_scoring import compute_completed_rides_multi, compute_team_points_multi
 from export_league_tables_html import (
+    CSS_VERSION,
     MEDAL_CLASSES,
     SITE_CSS,
     IFRAME_RESIZE_SCRIPT,
@@ -69,6 +78,7 @@ from export_league_tables_html import (
     render_sponsor_strip,
     save_json,
     truncate,
+    write_htaccess,
 )
 
 
@@ -144,7 +154,7 @@ def render_award_page(award_key: str, rows: List[Tuple[str, float]],
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(meta['title'])} — WMCCL Team Awards</title>
-<link rel="stylesheet" href="../css/site.css">
+<link rel="stylesheet" href="../css/site.css?v={CSS_VERSION}">
 </head>
 <body class="wmccl-league">
   <p class="breadcrumb"><a href="../index.html">← All categories</a></p>
@@ -201,6 +211,7 @@ def main():
     # Shared CSS — always rewritten (cheap), same as export_league_tables_html.py,
     # so this script also works standalone before any table pages exist yet.
     (css_dir / "site.css").write_text(SITE_CSS, encoding="utf-8")
+    write_htaccess(outdir)
 
     sponsors_cache = load_json(outdir / ".sponsors.json", [])
     manifest = load_json(outdir / ".manifest.json", {})
