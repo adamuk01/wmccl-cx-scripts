@@ -144,6 +144,15 @@ TEAM & CLUB AWARDS LINKS (2026-09-19):
     so run export_team_awards_html.py at some point into the same
     --outdir for them to resolve.
 
+PAGE-LINK CACHE-BUSTING (2026-09-23):
+    The "← Back" fallback link and the award links go through vurl(),
+    which adds `?v=<BUILD_VERSION>` (a timestamp of this run, or the
+    WMCCL_BUILD_VERSION environment variable if set) so each weekly
+    update's pages get URLs the browser has never cached. Identical to
+    BUILD_VERSION/vurl() in export_league_tables_html.py (see its
+    BROWSER CACHING fix 3) — copied rather than imported because this
+    script is deliberately standalone.
+
 USAGE:
     python3 export_rider_pages.py --db U8.db U10.db U12.db Youth.db \
         Women.db Masters.db Seniors.db \
@@ -163,7 +172,9 @@ OUTPUT:
 import argparse
 import csv
 import html
+import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -182,6 +193,17 @@ MILESTONE_THRESHOLDS = [5, 10]  # "Full House" is handled separately, at season_
 # here (not in pace_grade_scoring.py) since it's a presentation choice
 # for THIS page, not part of the grading formula itself.
 PACE_TREND_MIN_ROUNDS = 4
+
+# Page-link cache-busting (see PAGE-LINK CACHE-BUSTING in the docstring).
+BUILD_VERSION = os.environ.get("WMCCL_BUILD_VERSION") or time.strftime("%Y%m%d%H%M%S")
+
+
+def vurl(href: str) -> str:
+    """Append ?v=<BUILD_VERSION> to a relative page link (keeps any #fragment at the end)."""
+    base, hash_sign, fragment = href.partition("#")
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}v={BUILD_VERSION}{hash_sign}{fragment}"
+
 
 # Optional per-round ground/weather conditions ("bit of fun") shown as a
 # small icon against each round in a rider's results table — one value
@@ -704,7 +726,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
 <div class="wmccl-rider">
-  <p class="breadcrumb"><a href="../index.html" id="wmccl-back-link">← Back</a></p>
+  <p class="breadcrumb"><a href="{back_href}" id="wmccl-back-link">← Back</a></p>
   <h1>#{race_number} — {name}</h1>
   <div class="meta">{club} &middot; {gender_label} &middot; {category}</div>
 
@@ -764,7 +786,7 @@ def render_team_links_block(club: Optional[str], db_stem: str) -> str:
     if not links:
         return ""
 
-    link_html = " ".join(f'<a href="{esc(href)}">{esc(label)}</a>' for label, href in links)
+    link_html = " ".join(f'<a href="{esc(vurl(href))}">{esc(label)}</a>' for label, href in links)
     return f'  <div class="team-links">{esc(club_clean)} — {link_html}</div>'
 
 
@@ -935,6 +957,7 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
         pace_trend_block=pace_trend_block,
         team_links_block=team_links_block,
         rows=rows_html,
+        back_href=esc(vurl("../index.html")),
         iframe_resize_script=IFRAME_RESIZE_SCRIPT,
         back_link_script=BACK_LINK_SCRIPT,
     )
@@ -964,6 +987,8 @@ def main():
     outdir = Path(args.outdir)
     riders_dir = outdir / "riders"
     riders_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Build version (page-link cache-busting): {BUILD_VERSION}")
 
     round_names = load_round_names(args.rounds_file)
     if args.rounds_file:

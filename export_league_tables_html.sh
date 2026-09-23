@@ -21,38 +21,38 @@ mkdir -p league_html
 
 echo "Running U8 league table pages"
 export_league_tables_html.py --db U8.db --profile u8 --outdir league_html \
-      --rounds 11 --best 9 \
-      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
+      --rounds 11 --best 9 
+#      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
 
 echo "Running U10 league table pages"
 export_league_tables_html.py --db U10.db --profile u10 --outdir league_html \
-      --rounds 11 --best 9 \
-      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
+      --rounds 11 --best 9 
+#      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
 
 echo "Running U12 league table pages"
 export_league_tables_html.py --db U12.db --profile u12 --outdir league_html \
-      --rounds 11 --best 9 \
-      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
+      --rounds 11 --best 9 
+#      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
 
 echo "Running Youth league table pages"
 export_league_tables_html.py --db Youth.db --profile youth --outdir league_html \
-      --rounds 11 --best 9 \
-      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
+      --rounds 11 --best 9 
+#      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
 
 echo "Running Womens league table pages"
 export_league_tables_html.py --db Women.db --profile women --outdir league_html \
-      --rounds 11 --best 9 \
-      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
+      --rounds 11 --best 9 
+#      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
 
 echo "Running Senior league table pages"
 export_league_tables_html.py --db Seniors.db --profile seniors --outdir league_html \
-      --rounds 11 --best 9 \
-      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
+      --rounds 11 --best 9 
+#      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
 
 echo "Running Masters league table pages"
 export_league_tables_html.py --db Masters.db --profile masters --outdir league_html \
-      --rounds 11 --best 9 \
-      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
+      --rounds 11 --best 9 
+#      --sponsor-logo ../sponsors/BikeFood.jpg --sponsor-logo ../sponsors/Lazer.png --sponsor-logo ../sponsors/Shimano.png
 
 chmod -R 777 league_html
 

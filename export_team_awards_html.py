@@ -52,14 +52,21 @@ export_rider_pages.py):
 This script also rewrites index.html itself (using the SAME
 render_index_page() as export_league_tables_html.py, imported from it) so
 the Awards section appears immediately, without needing a table script
-re-run. It reads back whatever .manifest.json / .sponsors.json already
-exist in --outdir so it doesn't blank out tables or sponsors that were
-already there.
+re-run. It reads back whatever .manifest.json / .sponsors.json / .rounds.json
+already exist in --outdir so it doesn't blank out tables, sponsors or the
+"Standings after round X of Y" line's venue/date that were already there.
 
 CSS CACHE-BUSTING (2026-09-22): award pages link the stylesheet as
 `../css/site.css?v=<CSS_VERSION>` — CSS_VERSION is imported from
 export_league_tables_html.py so every page in the site always points at
 the same version of the shared stylesheet.
+
+PAGE-LINK CACHE-BUSTING (2026-09-23): the "← All categories" link goes
+through vurl() (imported from export_league_tables_html.py), which adds
+`?v=<BUILD_VERSION>` so each weekly update's pages get fresh URLs. The
+.awards.json cache keeps PLAIN hrefs; render_index_page() adds ?v= itself
+when it builds index.html. See BROWSER CACHING fix 3 in
+export_league_tables_html.py.
 """
 
 import argparse
@@ -68,6 +75,7 @@ from typing import Dict, List, Tuple
 
 from team_awards_scoring import compute_completed_rides_multi, compute_team_points_multi
 from export_league_tables_html import (
+    BUILD_VERSION,
     CSS_VERSION,
     MEDAL_CLASSES,
     SITE_CSS,
@@ -78,6 +86,7 @@ from export_league_tables_html import (
     render_sponsor_strip,
     save_json,
     truncate,
+    vurl,
     write_htaccess,
 )
 
@@ -157,7 +166,7 @@ def render_award_page(award_key: str, rows: List[Tuple[str, float]],
 <link rel="stylesheet" href="../css/site.css?v={CSS_VERSION}">
 </head>
 <body class="wmccl-league">
-  <p class="breadcrumb"><a href="../index.html">← All categories</a></p>
+  <p class="breadcrumb"><a href="{esc(vurl('../index.html'))}">← All categories</a></p>
   {sponsor_html}
   <h1>{esc(meta['title'])}</h1>
   <p class="ap-note">{esc(meta['description'])}</p>
@@ -191,7 +200,7 @@ def main():
                     help="Top N scoring riders per club per round for the two team competitions (default: 6)")
     ap.add_argument("--exclude-club", action="append", default=["No Club/Team"], help="Exclude club (repeatable)")
     ap.add_argument("--site-title", default="WMCCL League Tables",
-                    help="Heading on index.html (keep in sync with export_league_tables_html.py's --site-title)")
+                    help="Browser-tab <title> for index.html (keep in sync with export_league_tables_html.py's --site-title)")
     args = ap.parse_args()
 
     youth_dbs = [args.u8_db, args.u10_db, args.u12_db]
@@ -215,6 +224,9 @@ def main():
 
     sponsors_cache = load_json(outdir / ".sponsors.json", [])
     manifest = load_json(outdir / ".manifest.json", {})
+    rounds_info = {int(k): v for k, v in load_json(outdir / ".rounds.json", {}).items()}
+
+    print(f"Build version (page-link cache-busting): {BUILD_VERSION}")
 
     print("Computing Team Competition (adult/senior, U14 and above)...")
     team_rows = compute_team_points_multi(adult_dbs, top_n=args.top_n, exclude_clubs=args.exclude_club)
@@ -242,7 +254,8 @@ def main():
 
     save_json(outdir / ".awards.json", awards_cache)
 
-    index_html = render_index_page(manifest, sponsors_cache, args.site_title, awards=awards_cache)
+    index_html = render_index_page(manifest, sponsors_cache, args.site_title, awards=awards_cache,
+                                   rounds_info=rounds_info)
     (outdir / "index.html").write_text(index_html, encoding="utf-8")
     print("\n  Wrote index.html (with Awards section)")
 
