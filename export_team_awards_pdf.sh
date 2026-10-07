@@ -19,7 +19,7 @@ mkdir -p league_pdf
 echo "Running Team & Club Awards PDFs (Team Competition, U12 Team Competition, Mick Ives Participation Award)"
 export_team_awards_pdf.py --outdir league_pdf \
       --top-n 6 \
-      --exclude-club "No Club/Team" \
+      --exclude-club "No Club or Team" \
       --league-logo ../sponsors/WMCCL.png
 
 chmod -R 777 league_pdf

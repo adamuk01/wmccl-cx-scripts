@@ -35,12 +35,28 @@ Core rules you asked for:
   6) Upserts results:
        - Inserts/updates per (rider_id, round).
   7) DNF handling:
-       - D3 flags a DNF by putting the literal text "DNF" in the "Time" column
-         (the "Pos" column is still populated in these rows — it is NOT a
-         reliable signal of whether a rider finished).
+       - A row is treated as a DNF if EITHER:
+           a) the "Time" column holds the literal text "DNF", OR
+           b) "Pos" AND "Time" are both blank but "Laps" > 0 -- this is
+              what D3 actually exported for the first real DNFs (Masters,
+              2026-09-27): no position, no finish time, just the laps
+              they rode and their lap splits.
+         A row with blank Pos, blank Time and 0/blank laps is NOT a DNF
+         (nothing was ridden -- e.g. a DNS) and is still skipped as
+         "missing Pos/Time".
        - DNF rows are excluded from re-ranking, points and overall/cat position
          entirely, and are upserted with status='DNF', cat_position=NULL,
-         overall_position=NULL, points=NULL.
+         overall_position=NULL, points=NULL, laps_completed=<laps ridden>,
+         finish_time_seconds=NULL.
+       - Sanity check (warning only, never changes data): a DNF whose lap
+         splits add up to ~the winner's time, or who rode as many laps as
+         their category's best finisher, is flagged as a PROBABLE FINISHER
+         in the summary -- see suspect_dnf_warnings(). Fix those in the CSV
+         (add Pos/Time) before importing for real.
+       - Downstream: league tables treat them as 0 points for the round;
+         rider pages list the round as DNF and add the laps to "Laps
+         completed"; the Mick Ives Participation Award only counts FIN/AP
+         so a DNF does not count as a ride there.
 
 Expected CSV columns (from your Seniors-results.csv sample):
   - "Pos"
@@ -49,7 +65,8 @@ Expected CSV columns (from your Seniors-results.csv sample):
   - "Laps"
   - "Category"
   - "Gender"
-  - (we ignore the rest, e.g. "Name", "Cat Pos", "Gen Pos", "Club", "Lap1"...)
+  - (we ignore the rest, e.g. "Cat Pos", "Gen Pos", "Club", "Lap1"...;
+     "Name" is only used to label DNFs in the summary output)
 
 DB assumptions:
   - riders table has: id, race_number, firstname, surname, ...
@@ -124,15 +141,121 @@ def parse_time_seconds(s):
         return None
 
 
-def is_dnf(time_value):
+def is_dnf(time_value, pos_value=None, laps=None):
     """
-    D3 RaceTec flags a DNF by putting the literal text 'DNF' in the Time
-    column. The Pos column is still populated on these rows, so Pos alone
-    is NOT a safe way to detect a DNF -- always check Time first.
+    Decide whether a CSV row is a DNF. Two shapes are recognised:
+
+      1) Time column holds the literal text 'DNF' (Pos may or may not be
+         populated -- never use Pos alone to infer "finished").
+      2) Pos AND Time both blank, but Laps > 0 -- the rider started and
+         rode some laps but has no finish position or time. This is the
+         shape D3 actually produced for the first real DNFs (2026-09-27).
+
+    Blank Pos + blank Time + 0/blank laps is NOT a DNF (nothing ridden).
     """
-    if time_value is None:
-        return False
-    return str(time_value).strip().upper() == "DNF"
+    t = "" if time_value is None else str(time_value).strip()
+    if t.upper() == "DNF":
+        return True
+
+    p = "" if pos_value is None else str(pos_value).strip()
+    if t == "" and p == "" and laps is not None and laps > 0:
+        return True
+
+    return False
+
+
+def lap_split_columns(headers):
+    """
+    D3 lap split headers are inconsistent ('Lap1', 'Lap 2', ...). Return
+    them in lap order.
+    """
+    cols = []
+    for h in headers or []:
+        hs = (h or "").strip()
+        if hs.lower().startswith("lap"):
+            n = safe_int(hs[3:].strip())
+            if n is not None:
+                cols.append((n, h))
+    return [h for _, h in sorted(cols)]
+
+
+def sum_lap_splits(row, split_cols):
+    """
+    Total of a row's lap splits in seconds, or None if it has none.
+    """
+    total = 0.0
+    found = False
+    for c in split_cols:
+        s = parse_time_seconds(row.get(c))
+        if s is not None:
+            total += s
+            found = True
+    return total if found else None
+
+
+# A DNF whose lap splits add up to at least this fraction of the fastest
+# finisher's (winner's) time rode (roughly) the whole race -- almost certainly a
+# finisher whose last crossing wasn't recorded, not a real DNF. 0.95
+# leaves room for staggered starts / timing noise. First real case:
+# Masters round, 2026-09-27 -- #370 rode 4 laps totalling 41:56.4 against
+# a winning time of 41:57, and D3 exported him with no Pos or Time.
+SUSPECT_DNF_TIME_FRACTION = 0.95
+
+
+def suspect_dnf_warnings(processed, dnf_rows, merge_categories=False):
+    """
+    Sanity check -- warns, never changes data. Flags a DNF as a probable
+    finisher if EITHER:
+      - their lap splits total >= SUSPECT_DNF_TIME_FRACTION of the fastest
+        finish time in their gender group, OR
+      - they rode as many laps as the best finisher in their scoring
+        category (fallback: their gender group).
+    Returns a list of (dnf_row, [reasons]).
+    """
+    # Winner's time per gender group = time of the best-ranked finisher
+    # (NOT the smallest time -- a lapped rider finishes with a shorter
+    # time on fewer laps).
+    fastest = {}
+    best_rank = {}
+    max_laps_cat = {}
+    max_laps_gender = {}
+    for x in processed:
+        g = x["gender"]
+        if x.get("time_sec") is not None and x["overall_rank"] < best_rank.get(g, 10**9):
+            best_rank[g] = x["overall_rank"]
+            fastest[g] = x["time_sec"]
+        if x.get("laps") is not None:
+            c = scoring_category(x["base_cat"], merge_categories)
+            max_laps_cat[c] = max(max_laps_cat.get(c, 0), x["laps"])
+            max_laps_gender[g] = max(max_laps_gender.get(g, 0), x["laps"])
+
+    out = []
+    for d in dnf_rows:
+        reasons = []
+        g = d["gender"]
+        split_total = d.get("split_total")
+        win = fastest.get(g)
+        if split_total is not None and win:
+            if split_total >= SUSPECT_DNF_TIME_FRACTION * win:
+                reasons.append(
+                    f"lap splits total {fmt_secs(split_total)} vs winner's "
+                    f"time {fmt_secs(win)}"
+                )
+        c = scoring_category(d["base_cat"], merge_categories)
+        ref_laps = max_laps_cat.get(c) or max_laps_gender.get(g)
+        if d.get("laps") and ref_laps and d["laps"] >= ref_laps:
+            reasons.append(f"rode {d['laps']} laps, same as the best finisher ({ref_laps})")
+        if reasons:
+            out.append((d, reasons))
+    return out
+
+
+def fmt_secs(s):
+    if s is None:
+        return "-"
+    m, sec = divmod(s, 60)
+    h, m = divmod(int(m), 60)
+    return f"{h}:{m:02d}:{sec:04.1f}" if h else f"{m}:{sec:04.1f}"
 
 
 def normalise_gender(g):
@@ -252,12 +375,13 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, merg
       processed: list[dict] with keys:
         race_no, base_cat, gender, csv_pos, time_sec, overall_rank, cat_rank
       dnf_rows: list[dict] with keys:
-        race_no, base_cat, gender
+        race_no, base_cat, gender, laps, name
         (league riders who DNF'd -- excluded from ranking/points entirely)
       stats: dict
     """
     extracted = []
     dnf_rows = []
+    split_cols = lap_split_columns(list(rows[0].keys()) if rows else [])
     stats = {
         "input_rows": 0,
         "kept_league": 0,
@@ -287,21 +411,24 @@ def rerank(rows, *, nonleague_threshold, split_genders, women_single_table, merg
         base_cat = normalise_category(r.get("Category"))
 
         raw_time = r.get("Time")
+        raw_pos = r.get("Pos")
         laps = safe_int(r.get("Laps"))
 
-        if is_dnf(raw_time):
-            # Check Time BEFORE Pos -- D3 still populates Pos for DNF rows,
-            # so Pos presence must never be used to infer "finished".
+        if is_dnf(raw_time, raw_pos, laps):
+            # Check for DNF BEFORE trying to order the row -- see is_dnf()
+            # for the two DNF shapes D3 can produce.
             stats["dnf"] += 1
             dnf_rows.append({
                 "race_no": race_no,
                 "base_cat": base_cat,
                 "gender": gender,
                 "laps": laps,
+                "name": (r.get("Name") or "").strip(),
+                "split_total": sum_lap_splits(r, split_cols),
             })
             continue
 
-        csv_pos = safe_int(r.get("Pos"))
+        csv_pos = safe_int(raw_pos)
         time_sec = parse_time_seconds(raw_time)
         if csv_pos is None and time_sec is None:
             stats["skipped_missing_ordering"] += 1
@@ -585,6 +712,21 @@ def main():
     print(f"  Women single table (female only)      : {args.women_single_table}")
     print(f"  Merge Sen+U23 into one scoring group   : {args.merge_categories}")
     print(f"  Points scheme                         : {args.max_points} down to 1")
+
+    if dnf_rows:
+        print("\nDNFs detected (check these are real DNFs, not unplaced finishers):")
+        for d in dnf_rows:
+            print(f"  race_no={d['race_no']:<4}  cat={d['base_cat']:<6}  "
+                  f"laps={d['laps']}  splits={fmt_secs(d.get('split_total'))}  {d['name']}")
+
+        suspects = suspect_dnf_warnings(processed, dnf_rows, args.merge_categories)
+        if suspects:
+            print("\n⚠️  PROBABLE FINISHERS recorded as DNF -- check with the timekeeper")
+            print("   and add Pos/Time to the CSV before importing for real:")
+            for d, reasons in suspects:
+                print(f"  race_no={d['race_no']:<4}  {d['name']}")
+                for reason in reasons:
+                    print(f"      - {reason}")
 
     db_stats = import_results(
         db_path,
