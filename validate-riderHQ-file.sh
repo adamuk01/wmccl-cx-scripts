@@ -8,5 +8,5 @@ validate_and_allocate_entrants.py \
   --db Women.db \
   --csv WMCCLRiderEntry.csv \
   --out corrected_WMCCLRiderEntry.csv \
-  --add-allocated-flag
-
+  --add-allocated-flag \
+  $* 
