@@ -8,6 +8,11 @@ The award is calculated per eligible database (category group).
 Eligible categories: U12, Youth, Junior/Senior, Vets (Masters).
 
 Rules:
+  - A finish is a normal FIN result, or an average-points (AP) row that still
+    has a real position (Regional Champs: everyone who enters is awarded
+    average POINTS for the league table, but their real position, laps and
+    time are kept — we score them on how they rode, not on the points).
+    AP rows with no position (volunteers) are not finishes.
   - Only league riders (race_number < 900) are eligible.
   - Riders must have completed >= 2/3 of all valid league rounds.
   - Riders must have >= 2 finishes in the early-season window (first 4 valid rounds).
@@ -98,19 +103,33 @@ DEFAULT_LATE_WINDOW  = 4
 SCORE_BASIS_CHOICES = ("auto", "pace", "percentile")
 
 
+def real_result_sql(alias=""):
+    """
+    SQL predicate for "this results row records a rider who actually raced":
+    a normal FIN row, OR an AP row that still has a real cat_position
+    (Regional Champs — AP points awarded on top of a genuine finish).
+    Volunteer AP rows have no position and are excluded. Mirrors
+    pace_grade_scoring.is_real_result().
+    """
+    a = f"{alias}." if alias else ""
+    return (f"({a}status = 'FIN' OR "
+            f"({a}is_ap = 1 AND {a}cat_position IS NOT NULL))")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def get_valid_rounds(conn):
     """
-    Return a sorted list of round numbers that have at least one FIN result.
+    Return a sorted list of round numbers that have at least one real result
+    (FIN, or AP with a real position — see real_result_sql()).
     These are the 'valid' league rounds (cancelled/empty rounds are excluded).
     """
-    cur = conn.execute("""
+    cur = conn.execute(f"""
         SELECT DISTINCT round
         FROM results
-        WHERE status = 'FIN'
+        WHERE {real_result_sql()}
         ORDER BY round
     """)
     return [row[0] for row in cur.fetchall()]
@@ -154,7 +173,8 @@ def get_league_riders(conn):
 
 def get_all_finishes(conn, rider_ids, with_time_cols):
     """
-    Return all FIN results for the given rider_ids.
+    Return all real results (FIN, or AP with a real position) for the
+    given rider_ids.
     Returns dict: rider_id -> list of {round, cat_position, overall_position,
     points, is_ap, laps_completed, finish_time_seconds}
 
@@ -173,7 +193,7 @@ def get_all_finishes(conn, rider_ids, with_time_cols):
             SELECT rider_id, round, cat_position, overall_position, points,
                    is_ap, laps_completed, finish_time_seconds
             FROM results
-            WHERE status = 'FIN'
+            WHERE {real_result_sql()}
               AND rider_id IN ({placeholders})
             ORDER BY rider_id, round
         """, list(rider_ids))
@@ -182,7 +202,7 @@ def get_all_finishes(conn, rider_ids, with_time_cols):
             SELECT rider_id, round, cat_position, overall_position, points,
                    is_ap
             FROM results
-            WHERE status = 'FIN'
+            WHERE {real_result_sql()}
               AND rider_id IN ({placeholders})
             ORDER BY rider_id, round
         """, list(rider_ids))
@@ -225,7 +245,7 @@ def compute_field_sizes(conn, valid_rounds):
         SELECT res.round, r.race_category, r.gender, COUNT(*) AS cnt
         FROM results res
         JOIN riders r ON r.id = res.rider_id
-        WHERE res.status = 'FIN'
+        WHERE {real_result_sql("res")}
           AND r.race_number < {NONLEAGUE_THRESHOLD}
           AND res.round IN ({placeholders})
         GROUP BY res.round, r.race_category, r.gender
@@ -236,7 +256,7 @@ def compute_field_sizes(conn, valid_rounds):
         SELECT res.round, r.gender, COUNT(*) AS cnt
         FROM results res
         JOIN riders r ON r.id = res.rider_id
-        WHERE res.status = 'FIN'
+        WHERE {real_result_sql("res")}
           AND r.race_number < {NONLEAGUE_THRESHOLD}
           AND res.round IN ({placeholders})
         GROUP BY res.round, r.gender
@@ -448,6 +468,7 @@ def calculate_most_improved(conn, db_label, max_rounds,
                 "position_used":    pos,        # rank actually used for the percentile fallback
                 "field_size":       fs,
                 "points":           f.get("points"),
+                "is_ap":            bool(f.get("is_ap")),  # points are the AP marker (999), not a result
                 "pace_grade_pct":   pace_pct,   # raw Pace Grade (0-100), None if ungradeable
                 "percentile":       pct_score,  # rank-based score, always computed when possible
                 "score":            score,      # the score actually used (pace_score or pct_score)
@@ -587,7 +608,7 @@ def print_round_breakdown(r, valid_rounds, label="", single_table=False):
         src  = {"pace": "pace", "percentile": "rank", None: "-"}[d["score_source"]]
         pos  = str(d["position_used"]) if d.get("position_used") is not None else "-"
         fld  = str(d["field_size"])    if d["field_size"]   is not None else "-"
-        pts  = str(d["points"])        if d["points"]       is not None else "-"
+        pts  = "AP" if d.get("is_ap") else (str(d["points"]) if d["points"] is not None else "-")
         paceg = f"{d['pace_grade_pct']:.1f}" if d["pace_grade_pct"] is not None else "-"
         pct  = f"{d['score']*100:.1f}%" if d["score"] is not None else "-"
         marker = " ◀ early" if win == "E" else (" ◀ late" if win == "L" else "")
@@ -780,7 +801,7 @@ def write_csv(all_results, out_path, max_rounds=12):
                     row[f"r{rnd}_source"] = d.get("score_source", "") or ""
                     row[f"r{rnd}_pos"]    = d.get("cat_position", "")
                     row[f"r{rnd}_field"]  = d.get("field_size", "")
-                    row[f"r{rnd}_pts"]    = d.get("points", "")
+                    row[f"r{rnd}_pts"]    = "AP" if d.get("is_ap") else d.get("points", "")
                     pg = d.get("pace_grade_pct")
                     row[f"r{rnd}_pace_grade"] = f"{pg:.2f}" if pg is not None else ""
                     pct = d.get("score")
@@ -799,8 +820,12 @@ def main():
     )
     ap.add_argument("--db", action="append", required=True, metavar="DB",
                     help="SQLite DB file (repeat for multiple, e.g. --db U12.db --db Youth.db)")
-    ap.add_argument("--max-rounds", type=int, default=12,
-                    help="Max rounds in the season (default 12, used for information only)")
+    ap.add_argument("--max-rounds", type=int, default=None,
+                    help="Last round of the season. Sets the late window "
+                         "(rounds max-late+1..max) and how many rounds are "
+                         "read for pace. Default: the highest round that "
+                         "has any real result in each DB (e.g. 11 when "
+                         "round 11 is the Regional Champs finale).")
     ap.add_argument("--early-window", type=int, default=DEFAULT_EARLY_WINDOW,
                     help=f"Number of early-season rounds (default {DEFAULT_EARLY_WINDOW})")
     ap.add_argument("--late-window", type=int, default=DEFAULT_LATE_WINDOW,
@@ -846,10 +871,18 @@ def main():
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
 
+        max_rounds = args.max_rounds
+        if max_rounds is None:
+            valid = get_valid_rounds(conn)
+            max_rounds = max(valid) if valid else 12
+            print(f"  Last round raced: {max_rounds} "
+                  f"(late window = rounds {max_rounds - args.late_window + 1}-{max_rounds}; "
+                  f"override with --max-rounds)")
+
         results = calculate_most_improved(
             conn,
             db_label=db_label,
-            max_rounds=args.max_rounds,
+            max_rounds=max_rounds,
             early_window_size=args.early_window,
             late_window_size=args.late_window,
             single_table=args.single_table,

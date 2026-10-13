@@ -97,12 +97,19 @@ touching PACE_GROUP_OVERRIDES or either compute_* function below):
     PACE_GROUP_OVERRIDES are wrong for that DB (two riders who didn't
     actually share a start got merged), not the formula.
 
-WHAT COUNTS AS GRADEABLE:
-    Same "real result" rule as the rest of the rider-page code: DNF rows
-    (no reliable finish time) and AP / average-points rows (no time or
-    laps recorded at all) get no grade for that round — shown as "—" —
-    exactly like they're already excluded from points/position/medal
-    calculations elsewhere.
+WHAT COUNTS AS GRADEABLE (changed 2026-10-13 for Regional Champs):
+    A "real result" is either a normal FIN row, OR an average-points (AP)
+    row that still carries a real position (cat_position NOT NULL). The
+    second case is the Regional Champs round: everyone who enters is
+    awarded average POINTS for the league table, but they genuinely raced
+    and the import stored their position, laps and time. AP is a league-
+    scoring decision, not a record of performance, so those rows are
+    graded on pace like any other finish (see is_real_result()).
+
+    Still NOT gradeable: DNF rows (no reliable finish time), and AP rows
+    with no position — i.e. volunteers (allocate_average_points.py
+    --reason volunteer), who never raced. Those have no laps/time either,
+    so they get no grade for that round — shown as "—".
 
 Nothing in here touches the database beyond a single read query, and it
 returns plain Python data structures — no HTML, no argv — mirroring
@@ -182,6 +189,25 @@ def pace_group_for(db_stem: str, race_category: Optional[str]) -> Optional[str]:
     return overrides.get(cat, cat)
 
 
+def is_real_result(status: Optional[str], is_ap, cat_position) -> bool:
+    """
+    True if this results row records a rider who actually raced.
+
+    A normal row is real when status == 'FIN'. An AP row (is_ap truthy,
+    status 'AP', points 999) is real only if it still has a cat_position
+    — the Regional Champs case, where AP is a points award layered on top
+    of a genuine finish. Volunteer AP rows have no position and are not.
+    """
+    if is_ap:
+        return cat_position is not None
+    return status == "FIN"
+
+
+# SQL fragment equivalent of is_real_result(), for queries that alias the
+# results table as `res` (as compute_round_leader_paces does).
+REAL_RESULT_SQL = "(res.status = 'FIN' OR (res.is_ap = 1 AND res.cat_position IS NOT NULL))"
+
+
 def compute_pace(laps: Optional[int], time_seconds: Optional[float]) -> Optional[float]:
     """
     Seconds per lap, or None if laps/time aren't a valid gradeable pair
@@ -230,11 +256,11 @@ def compute_round_leader_paces(conn: sqlite3.Connection, rounds: int, db_stem: s
     that isn't a single flat read of `results`.
     """
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT res.round, r.race_category, res.laps_completed, res.finish_time_seconds
         FROM results res
         JOIN riders r ON r.id = res.rider_id
-        WHERE res.status = 'FIN'
+        WHERE {REAL_RESULT_SQL}
           AND res.round BETWEEN 1 AND ?
           AND res.laps_completed IS NOT NULL AND res.laps_completed > 0
           AND res.finish_time_seconds IS NOT NULL AND res.finish_time_seconds > 0
@@ -279,7 +305,7 @@ def compute_rider_pace_grades(history: List[Tuple], leader_paces: Dict[Tuple[int
     group = pace_group_for(db_stem, race_category)
     grades: Dict[int, Optional[float]] = {}
     for rnd, cat_pos, overall_pos, points, is_ap, status, laps, time_sec in history:
-        if status != "FIN" or is_ap or group is None:
+        if group is None or not is_real_result(status, is_ap, cat_pos):
             grades[rnd] = None
             continue
         grades[rnd] = pace_grade(laps, time_sec, leader_paces.get((rnd, group)))
