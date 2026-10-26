@@ -178,6 +178,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import rider_career
 from pace_grade_scoring import (
     compute_round_leader_paces,
     compute_rider_pace_grades,
@@ -341,9 +342,11 @@ def ensure_schema(conn: sqlite3.Connection, db_name: str):
 
 def load_riders(conn: sqlite3.Connection) -> List[Tuple]:
     cur = conn.cursor()
-    cur.execute("""
+    cols = {r[1] for r in cur.execute("PRAGMA table_info(riders)")}
+    pid = "person_id" if "person_id" in cols else "NULL"   # set by assign_person_ids.py
+    cur.execute(f"""
         SELECT id, race_number, firstname, surname, gender, club_name,
-               race_category, race_category_previous_year, average_points_last_year
+               race_category, race_category_previous_year, average_points_last_year, {pid}
         FROM riders
         ORDER BY race_number
     """)
@@ -672,7 +675,16 @@ BACK_LINK_SCRIPT = """<script>
 (function () {
   try {
     var link = document.getElementById('wmccl-back-link');
-    if (link && window.history && history.length > 1) {
+    if (!link) return;
+    // Arrived from another season's rider page (it passes ?back=<relative path to itself>):
+    // go straight back to THAT page. Only plain relative .html paths are accepted.
+    var back = null;
+    try { back = new URLSearchParams(window.location.search).get('back'); } catch (e) { /* old browser */ }
+    if (back && /^[A-Za-z0-9_.\\/-]+\\.html$/.test(back) && back.indexOf('//') < 0) {
+      link.setAttribute('href', back);
+      return;
+    }
+    if (window.history && history.length > 1) {
       link.addEventListener('click', function (e) {
         e.preventDefault();
         history.back();
@@ -722,7 +734,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   .wmccl-rider .team-links {{ margin: 0 0 1.25rem; font-size: 0.9rem; color: #444; }}
   .wmccl-rider .team-links a {{ margin-right: 0.75rem; }}
   .wmccl-rider .breadcrumb {{ margin: 0 0 0.75rem; font-size: 0.9rem; }}
-</style>
+{career_css}</style>
 </head>
 <body>
 <div class="wmccl-rider">
@@ -743,7 +755,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
     <div class="stat"><span class="label">Laps completed</span><span class="value">{total_laps}</span></div>
     <div class="stat"><span class="label">Time in the saddle</span><span class="value">{total_time}</span></div>
   </div>
-
+{career_block}
 {compare_block}
 
 {pace_trend_block}
@@ -837,7 +849,8 @@ def render_pace_trend_block(stats: Dict) -> str:
 def render_page(race_number: int, firstname: str, surname: str, gender: str,
                 club: str, category: str, history: List[Tuple], stats: Dict,
                 pace_grades: Dict[int, Optional[float]],
-                round_names: Dict[int, Dict[str, str]], db_stem: str) -> str:
+                round_names: Dict[int, Dict[str, str]], db_stem: str,
+                career: Optional[Dict] = None, season: Optional[str] = None) -> str:
     name = display_name(firstname, surname)
 
     gender_label = {"M": "Male", "F": "Female"}.get((gender or "").strip().upper(), esc(gender) or "—")
@@ -910,6 +923,8 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
         badge_parts.append('<span class="badge newbie">New rider this season</span>')
     if stats["milestone_badge"]:
         badge_parts.append(f'<span class="badge milestone">{esc(stats["milestone_badge"])}</span>')
+    for css, label in rider_career.career_badges(career):
+        badge_parts.append(f'<span class="badge {css}">{esc(label)}</span>')
     badges_html = "\n".join(f"    {b}" for b in badge_parts) if badge_parts else ""
 
     # Last-year vs this-year average comparison
@@ -953,6 +968,8 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
         avg_pace_grade=format_pct(stats["avg_pace_grade"]),
         total_laps=stats["total_laps"] if stats["total_laps"] else "—",
         total_time=format_duration(stats["total_time_seconds"]),
+        career_css=rider_career.CAREER_CSS if career else "",
+        career_block=rider_career.render_career_block(career, season or "", format_duration, vurl),
         compare_block=compare_block,
         pace_trend_block=pace_trend_block,
         team_links_block=team_links_block,
@@ -982,7 +999,20 @@ def main():
                          "(columns: round,name,venue,date,conditions — the same file used for "
                          "set_round_names.py / rounds-template.csv). Shared across "
                          "all category DBs since a round is the same event for everyone.")
+    ap.add_argument("--history", default=None,
+                    help="Optional wmccl_history.db. With --season, adds each rider's career totals, "
+                         "career badges and links to their earlier-season pages (riders are matched "
+                         "by riders.person_id, set by assign_person_ids.py). Without it the pages "
+                         "are exactly as before.")
+    ap.add_argument("--season", default=None,
+                    help="This season's label, e.g. 2026-27 (required with --history). Only EARLIER "
+                         "seasons are read from the history, so archiving this season never double counts.")
     args = ap.parse_args()
+    if bool(args.history) != bool(args.season):
+        raise SystemExit("❌ --history and --season must be given together")
+    hist = rider_career.History(args.history) if args.history else None
+    careers_written = 0
+    no_person_id = 0
 
     outdir = Path(args.outdir)
     riders_dir = outdir / "riders"
@@ -1034,7 +1064,7 @@ def main():
         print(f"\n{db_path.name}: {len(riders)} riders")
 
         for (rider_id, race_number, firstname, surname, gender, club_name,
-             race_category, race_category_prev, avg_last_year) in riders:
+             race_category, race_category_prev, avg_last_year, person_id) in riders:
 
             if race_number is None:
                 skipped_no_number += 1
@@ -1050,9 +1080,27 @@ def main():
                 average_points_last_year=avg_last_year,
             )
 
+            career = None
+            if hist is not None:
+                if person_id is None:
+                    no_person_id += 1
+                else:
+                    # career figures use the archive's rules (AP rows carry no laps/time)
+                    career_stats = compute_stats(
+                        rider_career.sanitize_history(history, AP_MARKER), {},
+                        season_length=args.rounds, race_category=race_category,
+                        race_category_previous_year=race_category_prev,
+                        average_points_last_year=avg_last_year)
+                    career = rider_career.build_career(hist, person_id, args.season,
+                                                       race_number, career_stats)
+                    if career:
+                        careers_written += 1
+                        stats["is_newbie"] = False   # has earlier seasons on record
+
             page_html = render_page(
                 race_number, firstname, surname, gender, club_name,
                 race_category, history, stats, pace_grades, round_names, db_stem,
+                career=career, season=args.season,
             )
 
             out_file = riders_dir / f"{race_number}.html"
@@ -1089,6 +1137,11 @@ def main():
     print(f"\nDone.")
     print(f"  Rider pages written : {written}  -> {riders_dir}/<race_number>.html")
     print(f"  Skipped (no number) : {skipped_no_number}")
+    if hist is not None:
+        print(f"  Career sections     : {careers_written}  (from {args.history}, earlier seasons than {args.season})")
+        print(f"  Riders without a person_id (no career lookup): {no_person_id}"
+              + ("  <- run assign_person_ids.py --apply first" if no_person_id else ""))
+        hist.close()
     print(f"  robots.txt snippet  : {robots_path}")
     print(f"  Admin lookup CSV    : {admin_csv_path}  (internal use only — do NOT publish this file)")
 
