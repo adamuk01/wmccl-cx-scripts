@@ -249,6 +249,9 @@ NO_CLUB_PLACEHOLDER = "no club/team"
 # Set from --no-participation-link (e.g. when regenerating a past season whose
 # published Mick Ives result differs from the live HTML award page).
 INCLUDE_PARTICIPATION_LINK = True
+# Set from --no-award-links: drops all three award links (and the club line
+# that carries them) -- for seasons whose award pages aren't published.
+INCLUDE_AWARD_LINKS = True
 
 
 def team_award_links_for_db(db_stem: str) -> List[Tuple[str, str]]:
@@ -257,6 +260,8 @@ def team_award_links_for_db(db_stem: str) -> List[Tuple[str, str]]:
     — always the Participation award, plus whichever team competition this
     DB feeds into (if any).
     """
+    if not INCLUDE_AWARD_LINKS:
+        return []
     stem = db_stem.strip().lower()
     links = []
     if stem in U12_TEAM_DB_STEMS:
@@ -1008,6 +1013,9 @@ def main():
     ap.add_argument("--no-participation-link", action="store_true",
                     help="Leave the Mick Ives Participation Award link off the rider pages "
                          "(team-competition links are unaffected).")
+    ap.add_argument("--no-award-links", action="store_true",
+                    help="Leave ALL award links (Team Competition, U12 Team Competition, Mick Ives) "
+                         "off the rider pages, e.g. for a past season whose award pages aren't published.")
     ap.add_argument("--history", default=None,
                     help="Optional wmccl_history.db. With --season, adds each rider's career totals, "
                          "career badges and links to their earlier-season pages (riders are matched "
@@ -1017,9 +1025,11 @@ def main():
                     help="This season's label, e.g. 2026-27 (required with --history). Only EARLIER "
                          "seasons are read from the history, so archiving this season never double counts.")
     args = ap.parse_args()
+    global INCLUDE_PARTICIPATION_LINK, INCLUDE_AWARD_LINKS
     if args.no_participation_link:
-        global INCLUDE_PARTICIPATION_LINK
         INCLUDE_PARTICIPATION_LINK = False
+    if args.no_award_links:
+        INCLUDE_AWARD_LINKS = False
     if bool(args.history) != bool(args.season):
         raise SystemExit("❌ --history and --season must be given together")
     hist = rider_career.History(args.history) if args.history else None
