@@ -12,11 +12,15 @@ def main():
     )
     p.add_argument("db", nargs="+", help="One or more SQLite DB files")
     p.add_argument("--exclude-club", action="append", default=["No Club/Team"], help="Exclude club (repeatable)")
+    p.add_argument("--no-ap", action="store_true",
+                   help="Original rule: count completed finishes only, not average-points (AP) rounds "
+                        "(use to reproduce seasons published before AP counted).")
     args = p.parse_args()
 
     rows = compute_completed_rides_multi(
         db_paths=args.db,
         exclude_clubs=args.exclude_club,
+        include_ap=not args.no_ap,
     )
 
     writer = csv.writer(sys.stdout)

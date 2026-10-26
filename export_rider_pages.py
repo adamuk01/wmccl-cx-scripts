@@ -246,6 +246,11 @@ AWARD_LINKS = {
 NO_CLUB_PLACEHOLDER = "no club/team"
 
 
+# Set from --no-participation-link (e.g. when regenerating a past season whose
+# published Mick Ives result differs from the live HTML award page).
+INCLUDE_PARTICIPATION_LINK = True
+
+
 def team_award_links_for_db(db_stem: str) -> List[Tuple[str, str]]:
     """
     Returns the (label, href) pairs relevant to a rider from this source DB
@@ -258,7 +263,8 @@ def team_award_links_for_db(db_stem: str) -> List[Tuple[str, str]]:
         links.append(AWARD_LINKS["u12_team"])
     elif stem in ADULT_TEAM_DB_STEMS:
         links.append(AWARD_LINKS["adult_team"])
-    links.append(AWARD_LINKS["participation"])
+    if INCLUDE_PARTICIPATION_LINK:
+        links.append(AWARD_LINKS["participation"])
     return links
 
 
@@ -999,6 +1005,9 @@ def main():
                          "(columns: round,name,venue,date,conditions — the same file used for "
                          "set_round_names.py / rounds-template.csv). Shared across "
                          "all category DBs since a round is the same event for everyone.")
+    ap.add_argument("--no-participation-link", action="store_true",
+                    help="Leave the Mick Ives Participation Award link off the rider pages "
+                         "(team-competition links are unaffected).")
     ap.add_argument("--history", default=None,
                     help="Optional wmccl_history.db. With --season, adds each rider's career totals, "
                          "career badges and links to their earlier-season pages (riders are matched "
@@ -1008,6 +1017,9 @@ def main():
                     help="This season's label, e.g. 2026-27 (required with --history). Only EARLIER "
                          "seasons are read from the history, so archiving this season never double counts.")
     args = ap.parse_args()
+    if args.no_participation_link:
+        global INCLUDE_PARTICIPATION_LINK
+        INCLUDE_PARTICIPATION_LINK = False
     if bool(args.history) != bool(args.season):
         raise SystemExit("❌ --history and --season must be given together")
     hist = rider_career.History(args.history) if args.history else None

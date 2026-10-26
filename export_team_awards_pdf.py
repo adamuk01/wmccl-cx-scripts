@@ -175,6 +175,8 @@ def main():
     ap.add_argument("--outdir", default="league_pdf", help="Output directory (default: league_pdf)")
     ap.add_argument("--top-n", type=int, default=6,
                     help="Top N scoring riders per club per round for the two team competitions (default: 6)")
+    ap.add_argument("--no-ap", action="store_true",
+                    help="Mick Ives award: count completed finishes only, not average-points (AP) rounds.")
     ap.add_argument("--exclude-club", action="append", default=["No Club/Team"], help="Exclude club (repeatable)")
     ap.add_argument("--season", default=current_season(), help="Season shown in the title (default: %(default)s)")
     ap.add_argument("--league-logo", default=None, help="WMCCL logo image, shown top-left")
@@ -198,7 +200,8 @@ def main():
     results_by_key = {
         "team": compute_team_points_multi(adult_dbs, top_n=args.top_n, exclude_clubs=args.exclude_club),
         "u12_team": compute_team_points_multi(youth_dbs, top_n=args.top_n, exclude_clubs=args.exclude_club),
-        "participation": compute_completed_rides_multi(all_dbs, exclude_clubs=args.exclude_club),
+        "participation": compute_completed_rides_multi(all_dbs, exclude_clubs=args.exclude_club,
+                                                       include_ap=not args.no_ap),
     }
 
     for key in AWARD_ORDER:

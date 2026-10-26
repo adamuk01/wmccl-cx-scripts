@@ -198,6 +198,9 @@ def main():
     ap.add_argument("--outdir", default="league_html", help="Site output directory (default: league_html)")
     ap.add_argument("--top-n", type=int, default=6,
                     help="Top N scoring riders per club per round for the two team competitions (default: 6)")
+    ap.add_argument("--no-ap", action="store_true",
+                    help="Mick Ives award: count completed finishes only, not average-points (AP) rounds "
+                         "(original rule; use to match seasons published before AP counted).")
     ap.add_argument("--exclude-club", action="append", default=["No Club/Team"], help="Exclude club (repeatable)")
     ap.add_argument("--site-title", default="WMCCL League Tables",
                     help="Browser-tab <title> for index.html (keep in sync with export_league_tables_html.py's --site-title)")
@@ -234,8 +237,14 @@ def main():
     print("Computing U12 Team Competition (U12 and below)...")
     u12_team_rows = compute_team_points_multi(youth_dbs, top_n=args.top_n, exclude_clubs=args.exclude_club)
 
-    print("Computing Mick Ives Participation Award (all categories, finishes + AP rounds)...")
-    participation_rows = compute_completed_rides_multi(all_dbs, exclude_clubs=args.exclude_club)
+    if args.no_ap:
+        AWARD_META["participation"]["description"] = (
+            "Total rides counted per club, across every category — completed races only "
+            "(average-points rounds are not counted).")
+    print("Computing Mick Ives Participation Award (all categories, "
+          + ("finishes only" if args.no_ap else "finishes + AP rounds") + ")...")
+    participation_rows = compute_completed_rides_multi(all_dbs, exclude_clubs=args.exclude_club,
+                                                       include_ap=not args.no_ap)
 
     results_by_key = {
         "team": team_rows,

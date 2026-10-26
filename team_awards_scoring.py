@@ -169,6 +169,7 @@ def compute_team_points_multi(
 def compute_completed_rides_multi(
     db_paths: List[str],
     exclude_clubs: Optional[List[str]] = None,
+    include_ap: bool = True,
 ) -> List[Tuple]:
     """
     Count rides counted towards participation per club across multiple
@@ -181,6 +182,10 @@ def compute_completed_rides_multi(
     excluding AP rows (the original behaviour) systematically
     disadvantaged clubs that host events. Changed 2026-09-19 at Adam's
     request — AP rounds now count the same as a finish for this award.
+
+    include_ap=False restores the ORIGINAL rule (completed finishes only,
+    no AP rounds) -- used to reproduce seasons that were published before
+    the 2026-09-19 change (e.g. 2025-26).
 
     Schema assumed:
       riders(id, club_name, ...)
@@ -216,6 +221,10 @@ def compute_completed_rides_multi(
     # finish, or a round where the rider was awarded Average Points
     # (status='AP') instead of racing — see docstring above for why AP
     # counts here.
+    if include_ap:
+        counted_where = "res.status IN ('FIN', 'AP')"
+    else:
+        counted_where = "res.status = 'FIN' AND COALESCE(res.is_ap, 0) = 0"
     union_parts = []
     for a in aliases:
         union_parts.append(f"""
@@ -223,7 +232,7 @@ def compute_completed_rides_multi(
                 TRIM(r.club_name) AS club_name
             FROM {a}.results res
             JOIN {a}.riders r ON r.id = res.rider_id
-            WHERE res.status IN ('FIN', 'AP')
+            WHERE {counted_where}
         """)
 
     union_sql = "\nUNION ALL\n".join(union_parts)
