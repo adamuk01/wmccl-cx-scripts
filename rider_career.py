@@ -251,7 +251,8 @@ def render_career_block(career: Optional[Dict], current_season: str,
         href = vurl(f'{p["href"]}?back={p["back"]}') if p.get("href") else ""
         pod = _podiums(p["golds"], p["silvers"], p["bronzes"])
         bits = [esc(p["race_category"] or ""),
-                f'{p["races_completed"] or 0} races']
+                f'{p["races_completed"] or 0} races'
+                + (f' + {p["ap_rounds"]} AP' if p.get("ap_rounds") else "")]
         if pod:
             bits.append(f"{pod} podium{'s' if pod != 1 else ''}")
         detail = " · ".join(b for b in bits if b)
