@@ -739,6 +739,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   .wmccl-rider .stat {{ background: #f5f5f5; border-radius: 6px; padding: 0.5rem 0.8rem; }}
   .wmccl-rider .stat .label {{ display: block; font-size: 0.75rem; color: #666; }}
   .wmccl-rider .stat .value {{ font-size: 1.1rem; font-weight: 600; }}
+  .wmccl-rider .stat .ap-extra {{ font-size: 0.75rem; font-weight: 400; color: #666; }}
   .wmccl-rider .ap {{ color: #888; font-style: italic; }}
   .wmccl-rider .badges {{ display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.75rem 0 1.25rem; }}
   .wmccl-rider .badge {{ display: inline-block; padding: 0.3rem 0.7rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }}
@@ -774,7 +775,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   </div>
 
   <div class="stats">
-    <div class="stat"><span class="label">Races completed</span><span class="value">{races_completed}</span></div>
+    <div class="stat"><span class="label">Races completed</span><span class="value">{races_completed}{ap_suffix}</span></div>
     <div class="stat"><span class="label">Best cat. finish</span><span class="value">{best_cat_position}</span></div>
     <div class="stat"><span class="label">Best points</span><span class="value">{best_points}</span></div>
     <div class="stat"><span class="label">Season average</span><span class="value">{avg_points}</span></div>
@@ -989,6 +990,9 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
         category=esc(category or "—"),
         badges=badges_html,
         races_completed=stats["races_completed"],
+        ap_suffix=(f' <span class="ap-extra" title="Average-points round(s): count towards round badges and Full House, '
+                   f'but not as races, laps or time">+&nbsp;{stats["ap_credited"]}&nbsp;AP</span>'
+                   if stats.get("ap_credited") else ""),
         best_cat_position=fmt(stats["best_cat_position"], 0),
         best_points=fmt(stats["best_points"], 0),
         avg_points=fmt(stats["avg_points"], 1),

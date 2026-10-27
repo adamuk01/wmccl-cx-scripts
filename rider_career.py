@@ -54,6 +54,7 @@ CAREER_CSS = """
   .wmccl-rider .career h2 { font-size: 1.05rem; margin: 0 0 0.4rem; }
   .wmccl-rider .career-table th, .wmccl-rider .career-table td { padding: 0.3rem 0.5rem; }
   .wmccl-rider .career-table td.num, .wmccl-rider .career-table th.num { text-align: right; }
+  .wmccl-rider .ap-extra { font-size: 0.75rem; font-weight: 400; color: #666; }
   .wmccl-rider .career-note { font-size: 0.8rem; color: #888; margin: 0.3rem 0 0; }
   .wmccl-rider .prev-seasons { margin: 0.5rem 0 0; padding-left: 1.1rem; font-size: 0.9rem; }
   .wmccl-rider .prev-seasons li { margin: 0.15rem 0; }
@@ -153,6 +154,7 @@ def build_career(hist: History, person_id: Optional[int], current_season: str,
         "seasons_ridden": len(seasons) + 1,        # earlier seasons + this one
         "races": sum(p["races_completed"] or 0 for p in prior) + live_stats["races_completed"],
         # rounds = real races + average-points rounds in held rounds (drives the round badges)
+        "ap_total": sum(p["ap_rounds"] or 0 for p in prior) + live_stats.get("ap_credited", 0),
         "rounds": sum((p["races_completed"] or 0) + (p["ap_rounds"] or 0) for p in prior)
                   + live_stats["rounds_credited"],
         "laps": sum(p["laps"] or 0 for p in prior) + (live_stats["total_laps"] or 0),
@@ -162,6 +164,7 @@ def build_career(hist: History, person_id: Optional[int], current_season: str,
         "full_house_prior": sorted(p["season"] for p in prior if p["full_house"]),
         "full_house_now": live_full_house,
         "this": {
+            "ap": live_stats.get("ap_credited", 0),
             "races": live_stats["races_completed"],
             "laps": live_stats["total_laps"] or 0,
             "time": live_stats["total_time_seconds"] or 0.0,
@@ -226,8 +229,12 @@ def render_career_block(career: Optional[Dict], current_season: str,
         return f"{v:,}" if v else "—"
 
     t = career["this"]
+
+    def with_ap(races, ap) -> str:
+        return f'{num(races)} <span class="ap-extra">+&nbsp;{ap}&nbsp;AP</span>' if ap else num(races)
+
     rows = [
-        ("Races completed", num(t["races"]), num(career["races"])),
+        ("Races completed", with_ap(t["races"], t["ap"]), with_ap(career["races"], career["ap_total"])),
         ("Laps completed", num(t["laps"]), num(career["laps"])),
         ("Time in the saddle", fmt_duration(t["time"]), fmt_duration(career["time"])),
         ("Podiums", num(t["podiums"]), num(career["podiums"])),
@@ -257,7 +264,7 @@ def render_career_block(career: Optional[Dict], current_season: str,
       <tbody>
 {body}      </tbody>
     </table>
-    <p class="career-note">Career includes this season so far. Average-points rounds don't count as races, laps or time.</p>
+    <p class="career-note">Career includes this season so far. AP = average-points round: counts towards round badges and Full House, but not as a race, laps or time.</p>
     <ul class="prev-seasons">
 {items}    </ul>
   </div>
