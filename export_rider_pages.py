@@ -1071,16 +1071,29 @@ def main():
         else:
             print(f"⚠️  No round info loaded from {args.rounds_file} — pages will show plain 'Round N'.")
 
-    # Rounds really HELD (any real finisher in any DB given): an average-points round
-    # only counts towards the round badges / Full House if the round was actually run.
+    # Rounds really HELD (any real finisher in ANY category): an average-points round only
+    # counts towards the round badges / Full House if the round was actually run. Judged
+    # league-wide, so besides the DBs given, the standard category DBs sitting beside them are
+    # included -- e.g. Regional Champs is AP for Masters but a real race for U8, and running
+    # just Masters.db must still know the round was held.
+    held_files = {Path(f).resolve() for f in args.db if Path(f).exists()}
+    for f in list(held_files):
+        for name in ("U8", "U10", "U12", "Youth", "Women", "Masters", "Seniors"):
+            sib = f.parent / f"{name}.db"
+            if sib.exists():
+                held_files.add(sib.resolve())
     held_rounds = set()
-    for db_file in args.db:
-        if Path(db_file).exists():
-            t = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+    for f in sorted(held_files):
+        t = sqlite3.connect(f"file:{f}?mode=ro", uri=True)
+        try:
             held_rounds |= {r[0] for r in t.execute(
                 "SELECT DISTINCT round FROM results WHERE status='FIN' AND COALESCE(is_ap,0)=0 AND points<>999")
                 if r[0] is not None and r[0] <= args.rounds}
-            t.close()
+        except sqlite3.Error:
+            pass
+        t.close()
+    print(f"Rounds held (any category had real finishers): {sorted(held_rounds)}  "
+          f"-- average-points rounds in these count towards round badges / Full House")
 
     admin_rows = []  # race_number, name, club, category, source_db  -- ADMIN ONLY, do not publish
     written = 0
