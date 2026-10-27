@@ -313,8 +313,17 @@ def main():
                 if kind == "new":
                     counts["new"] += 1
             else:
-                if bc is not None:
+                # Seasons may be archived in any order. Only a season at least as recent as
+                # the newest one already on file may refresh the person's BC number, and the
+                # person's first_season is always the EARLIEST season they appear in.
+                newest = hc.execute(
+                    "SELECT MAX(season) FROM season_stats WHERE person_id=? AND season<>?",
+                    (person_id, args.season)).fetchone()[0]
+                if bc is not None and (newest is None or args.season >= newest):
                     hc.execute("UPDATE person SET BC_number=? WHERE person_id=?", (bc, person_id))
+                hc.execute("UPDATE person SET first_season=? WHERE person_id=? "
+                           "AND (first_season IS NULL OR first_season>?)",
+                           (args.season, person_id, args.season))
                 hc.execute("UPDATE person SET gender=? WHERE person_id=? AND (gender IS NULL OR gender='')",
                            (rh.norm(gender), person_id))
 
