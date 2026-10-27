@@ -1033,6 +1033,10 @@ def main():
                          "(columns: round,name,venue,date,conditions — the same file used for "
                          "set_round_names.py / rounds-template.csv). Shared across "
                          "all category DBs since a round is the same event for everyone.")
+    ap.add_argument("--count-round", type=int, action="append", default=[], metavar="N",
+                    help="treat this round as HELD even though nobody has a real finish in it (e.g. a round "
+                         "where every category was given average points), so its AP counts towards the "
+                         "round badges / Full House. Repeatable. Use the same values as archive_season.py.")
     ap.add_argument("--no-participation-link", action="store_true",
                     help="Leave the Mick Ives Participation Award link off the rider pages "
                          "(team-competition links are unaffected).")
@@ -1099,6 +1103,7 @@ def main():
         except sqlite3.Error:
             pass
         t.close()
+    held_rounds |= {r for r in args.count_round if r <= args.rounds}
     print(f"Rounds held (any category had real finishers): {sorted(held_rounds)}  "
           f"-- average-points rounds in these count towards round badges / Full House")
 

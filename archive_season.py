@@ -121,6 +121,11 @@ def main():
                     help="leave this round OUT of the history entirely (races, laps, time, medals, "
                          "averages and the Full House count), e.g. 9 for Regional Champs. "
                          "Repeatable. Recorded in schema_info.")
+    ap.add_argument("--count-round", type=int, action="append", default=[], metavar="N",
+                    help="treat this round as HELD (a round of the season that riders were expected to "
+                         "attend) even though nobody has a real finish in it -- e.g. 10 for a round "
+                         "where every category was given average points. Its AP then counts towards "
+                         "round badges, and a rider with no result in it misses Full House. Repeatable.")
     ap.add_argument("--round-note", action="append", default=[], metavar="N=TEXT",
                     help='note shown with a round, e.g. 9="Regional Champs: average points awarded". Repeatable.')
     ap.add_argument("--ap-only", action="append", default=[], metavar="ROUND:DB",
@@ -183,6 +188,7 @@ def main():
             "SELECT DISTINCT round FROM results WHERE status='FIN' AND is_ap=0 AND points<>999")}
         all_rounds |= {r[0] for r in t.execute("SELECT DISTINCT round FROM results")}
         t.close()
+    held_rounds |= set(args.count_round)
     held_rounds -= excluded
     all_rounds -= excluded
     league_rounds = args.rounds or len(held_rounds)

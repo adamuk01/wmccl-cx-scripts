@@ -31,7 +31,7 @@ Season labels are always written `2026-27`.
 3. **Back up the history DB:** `cp wmccl_history.db wmccl_history.db.before-2026-27`
 4. **Decide which rounds are special:**
    - A round where a category was given average points for everyone (e.g. Regional Champs) → `--ap-only ROUND:DB` for **each DB affected** (e.g. `--ap-only 11:Seniors.db`). Categories that raced it for real (e.g. U8–U12 in 2025-26) are *not* listed.
-   - **Average points count as a round completed** for the "5 Rounds" / "10 Rounds" / "Full House" badges and the career rounds badges — but only for rounds that were really held (somebody raced). So Regional Champs AP counts, while a round where *everyone in every category* got AP (e.g. 2024-25 round 10) is not a round and is not needed for Full House. AP never adds laps, time or points.
+   - **Average points count as a round completed** for the "5 Rounds" / "10 Rounds" / "Full House" badges and the career rounds badges — but only for rounds that were *held*: a round counts as held when at least one rider has a real finish in it. A round where **everyone in every category** got average points has no real finishers, so tell the scripts it is a real round with `--count-round N` (on both `archive_season.py` and `export_rider_pages.py`, same values). Then AP in that round counts and a rider who skipped it misses Full House (2024-25 round 10 was like this). AP never adds laps, time or points.
    - A round that shouldn't count at all → `--exclude-round N`.
    - Add a note shown with the round: `--round-note "11=Regional Champs: average points awarded to all except U8–U12"`.
 5. **Dry run first** (no `--apply` — nothing is written):
