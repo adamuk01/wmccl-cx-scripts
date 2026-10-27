@@ -159,6 +159,8 @@ def build_career(hist: History, person_id: Optional[int], current_season: str,
         "time": sum(p["time_seconds"] or 0.0 for p in prior) + (live_stats["total_time_seconds"] or 0.0),
         "podiums": sum(_podiums(p["golds"], p["silvers"], p["bronzes"]) for p in prior) + live_podiums,
         "full_houses": sum(p["full_house"] or 0 for p in prior) + live_full_house,
+        "full_house_prior": sorted(p["season"] for p in prior if p["full_house"]),
+        "full_house_now": live_full_house,
         "this": {
             "races": live_stats["races_completed"],
             "laps": live_stats["total_laps"] or 0,
@@ -200,9 +202,13 @@ def career_badges(career: Optional[Dict]) -> List[Tuple[str, str]]:
         label = _top_rung(value, ladder)
         if label:
             out.append(("career", label))
-    if career["full_houses"] >= 1:
-        n = career["full_houses"]
-        out.append(("career", "Full House" if n == 1 else f"{n} Full House seasons"))
+    n = career["full_houses"]
+    if n >= 2:
+        out.append(("career", f"{n} Full House seasons"))
+    elif n == 1 and career["full_house_prior"]:
+        # name the season, so it can't be mistaken for this season's own Full House badge
+        out.append(("career", f"Full House in {career['full_house_prior'][0]}"))
+    # n == 1 from THIS season alone: already shown as the season's Full House badge
     return out
 
 
