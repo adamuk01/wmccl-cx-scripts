@@ -102,8 +102,12 @@ class History:
     def prior_seasons(self, person_id: int, current_season: str) -> List[Dict]:
         cur = self.conn.execute("""
             SELECT season, source_db, race_number, race_category, races_completed, ap_rounds, laps,
-                   time_seconds, golds, silvers, bronzes, full_house, page_path
-            FROM season_stats WHERE person_id = ? AND season < ?
+                   time_seconds, golds, silvers, bronzes, full_house, page_path,
+                   (SELECT COUNT(*) FROM round_results r
+                     WHERE r.season = s.season AND r.source_db = s.source_db
+                       AND r.race_number = s.race_number AND r.is_ap = 1
+                       AND r.counts_for_career = 1) AS ap_all
+            FROM season_stats s WHERE person_id = ? AND season < ?
             ORDER BY season, source_db, race_number
         """, (person_id, current_season))
         cols = [d[0] for d in cur.description]
@@ -154,7 +158,7 @@ def build_career(hist: History, person_id: Optional[int], current_season: str,
         "seasons_ridden": len(seasons) + 1,        # earlier seasons + this one
         "races": sum(p["races_completed"] or 0 for p in prior) + live_stats["races_completed"],
         # rounds = real races + average-points rounds in held rounds (drives the round badges)
-        "ap_total": sum(p["ap_rounds"] or 0 for p in prior) + live_stats.get("ap_credited", 0),
+        "ap_total": sum(p["ap_all"] or 0 for p in prior) + live_stats.get("ap_all", 0),
         "rounds": sum((p["races_completed"] or 0) + (p["ap_rounds"] or 0) for p in prior)
                   + live_stats["rounds_credited"],
         "laps": sum(p["laps"] or 0 for p in prior) + (live_stats["total_laps"] or 0),
@@ -164,7 +168,7 @@ def build_career(hist: History, person_id: Optional[int], current_season: str,
         "full_house_prior": sorted(p["season"] for p in prior if p["full_house"]),
         "full_house_now": live_full_house,
         "this": {
-            "ap": live_stats.get("ap_credited", 0),
+            "ap": live_stats.get("ap_all", 0),
             "races": live_stats["races_completed"],
             "laps": live_stats["total_laps"] or 0,
             "time": live_stats["total_time_seconds"] or 0.0,
@@ -252,7 +256,7 @@ def render_career_block(career: Optional[Dict], current_season: str,
         pod = _podiums(p["golds"], p["silvers"], p["bronzes"])
         bits = [esc(p["race_category"] or ""),
                 f'{p["races_completed"] or 0} races'
-                + (f' + {p["ap_rounds"]} AP' if p.get("ap_rounds") else "")]
+                + (f' + {p["ap_all"]} AP' if p.get("ap_all") else "")]
         if pod:
             bits.append(f"{pod} podium{'s' if pod != 1 else ''}")
         detail = " · ".join(b for b in bits if b)
@@ -265,7 +269,7 @@ def render_career_block(career: Optional[Dict], current_season: str,
       <tbody>
 {body}      </tbody>
     </table>
-    <p class="career-note">Career includes this season so far. AP = average-points round: counts towards round badges and Full House, but not as a race, laps or time.</p>
+    <p class="career-note">Career includes this season so far. AP = average-points round: counts towards round badges and Full House (if the round was held), but not as a race, laps or time.</p>
     <ul class="prev-seasons">
 {items}    </ul>
   </div>

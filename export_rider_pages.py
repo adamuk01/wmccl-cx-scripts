@@ -516,7 +516,8 @@ def compute_stats(history: List[Tuple], pace_grades: Dict[int, Optional[float]],
     """
     real_points = []
     races_completed = 0
-    ap_credited = 0
+    ap_credited = 0   # AP rounds in rounds that were really held (count towards badges)
+    ap_all = 0        # every AP round, held or not (shown as "+ N AP")
     best_cat_position = None
     best_points = None
     best_round = None
@@ -537,6 +538,7 @@ def compute_stats(history: List[Tuple], pace_grades: Dict[int, Optional[float]],
             total_laps += laps
 
         if (is_ap or points == AP_MARKER or status == "AP") and not is_real:
+            ap_all += 1
             if ap_credit_rounds is None or rnd in ap_credit_rounds:
                 ap_credited += 1
 
@@ -595,6 +597,7 @@ def compute_stats(history: List[Tuple], pace_grades: Dict[int, Optional[float]],
     return {
         "races_completed": races_completed,
         "ap_credited": ap_credited,
+        "ap_all": ap_all,
         "rounds_credited": rounds_credited,
         "best_cat_position": best_cat_position,
         "best_points": best_points,
@@ -990,9 +993,9 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
         category=esc(category or "—"),
         badges=badges_html,
         races_completed=stats["races_completed"],
-        ap_suffix=(f' <span class="ap-extra" title="Average-points round(s): count towards round badges and Full House, '
-                   f'but not as races, laps or time">+&nbsp;{stats["ap_credited"]}&nbsp;AP</span>'
-                   if stats.get("ap_credited") else ""),
+        ap_suffix=(f' <span class="ap-extra" title="Average-points round(s): count towards round badges and Full House '
+                   f'(when the round was held), but not as races, laps or time">+&nbsp;{stats["ap_all"]}&nbsp;AP</span>'
+                   if stats.get("ap_all") else ""),
         best_cat_position=fmt(stats["best_cat_position"], 0),
         best_points=fmt(stats["best_points"], 0),
         avg_points=fmt(stats["avg_points"], 1),
