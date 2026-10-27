@@ -208,7 +208,9 @@ def main():
         except sqlite3.Error:
             pass
         # rounds this category is expected to RACE: a round it is AP-only for (--ap-only) isn't one
-        season_len = args.rounds or len(held_rounds - {r for (r, d) in ap_only if d == dbp.name})
+        # An AP round in a round that was really held counts as a round completed, so
+        # the season length is every held round -- including ones this DB took AP for.
+        season_len = args.rounds or len(held_rounds)
         max_round = rc.execute("SELECT COALESCE(MAX(round),0) FROM results").fetchone()[0]
         real_by_round = dict(rc.execute(
             "SELECT round, COUNT(*) FROM results WHERE status='FIN' AND is_ap=0 AND points<>999 GROUP BY round"))
@@ -328,14 +330,15 @@ def main():
                            (rh.norm(gender), person_id))
 
             # -- stats (same function the rider pages use) ----------------------------
-            st = compute_stats(history, {}, season_length=season_len,
+            st = compute_stats(history, {}, season_length=season_len, ap_credit_rounds=held_rounds,
                                race_category=cat, race_category_previous_year=cat_prev,
                                average_points_last_year=avg_ly)
             tiers = list(st["medal_rounds"].values())
             # AP value exactly as the league tables compute it at season end
             pts_map = {(rid, h[0]): (h[3], h[4]) for h in history}
             ap_value = rider_avg_this_season(rid, pts_map, max_round)
-            ap_rounds = sum(1 for h in history if h[4] or h[3] == AP_MARKER)
+            # AP rounds credited as rounds completed (held rounds only)
+            ap_rounds = st["ap_credited"]
             hc.execute("""
                 INSERT INTO season_stats(person_id, season, source_db, race_number, race_category,
                     race_category_previous_year, BC_number_entered, rounds_in_season,

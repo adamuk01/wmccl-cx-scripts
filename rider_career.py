@@ -86,7 +86,7 @@ class History:
 
     def prior_seasons(self, person_id: int, current_season: str) -> List[Dict]:
         cur = self.conn.execute("""
-            SELECT season, source_db, race_number, race_category, races_completed, laps,
+            SELECT season, source_db, race_number, race_category, races_completed, ap_rounds, laps,
                    time_seconds, golds, silvers, bronzes, full_house, page_path
             FROM season_stats WHERE person_id = ? AND season < ?
             ORDER BY season, source_db, race_number
@@ -138,6 +138,9 @@ def build_career(hist: History, person_id: Optional[int], current_season: str,
         "first_season": seasons[0],
         "seasons_ridden": len(seasons) + 1,        # earlier seasons + this one
         "races": sum(p["races_completed"] or 0 for p in prior) + live_stats["races_completed"],
+        # rounds = real races + average-points rounds in held rounds (drives the round badges)
+        "rounds": sum((p["races_completed"] or 0) + (p["ap_rounds"] or 0) for p in prior)
+                  + live_stats["rounds_credited"],
         "laps": sum(p["laps"] or 0 for p in prior) + (live_stats["total_laps"] or 0),
         "time": sum(p["time_seconds"] or 0.0 for p in prior) + (live_stats["total_time_seconds"] or 0.0),
         "podiums": sum(_podiums(p["golds"], p["silvers"], p["bronzes"]) for p in prior) + live_podiums,
@@ -176,7 +179,7 @@ def career_badges(career: Optional[Dict]) -> List[Tuple[str, str]]:
         return []
     out: List[Tuple[str, str]] = [("founder", f"Riding since {career['first_season']}")]
     for value, ladder in ((career["seasons_ridden"], SEASONS_LADDER),
-                          (career["races"], ROUNDS_LADDER),
+                          (career["rounds"], ROUNDS_LADDER),
                           (career["laps"], LAPS_LADDER),
                           (career["time"] / 3600.0, HOURS_LADDER),
                           (career["podiums"], PODIUM_LADDER)):

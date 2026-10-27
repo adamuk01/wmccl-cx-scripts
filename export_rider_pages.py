@@ -492,8 +492,16 @@ def compute_stats(history: List[Tuple], pace_grades: Dict[int, Optional[float]],
                   season_length: int,
                   race_category: Optional[str],
                   race_category_previous_year: Optional[str],
-                  average_points_last_year: Optional[float]) -> Dict[str, object]:
+                  average_points_last_year: Optional[float],
+                  ap_credit_rounds: Optional[set] = None) -> Dict[str, object]:
     """
+    ap_credit_rounds: rounds that were really HELD (somebody raced). An
+    average-points (AP) round in one of these counts as a round completed for
+    the milestone badges ("5 Rounds" / "10 Rounds" / "Full House") -- e.g. the
+    Regional Champs, where most categories are always given AP, so otherwise
+    nobody could ever earn Full House. None = every AP round counts. AP never
+    adds to races_completed, laps, time or points stats.
+
     history rows: (round, cat_position, overall_position, points, is_ap,
                     status, laps_completed, finish_time_seconds)
 
@@ -508,6 +516,7 @@ def compute_stats(history: List[Tuple], pace_grades: Dict[int, Optional[float]],
     """
     real_points = []
     races_completed = 0
+    ap_credited = 0
     best_cat_position = None
     best_points = None
     best_round = None
@@ -526,6 +535,10 @@ def compute_stats(history: List[Tuple], pace_grades: Dict[int, Optional[float]],
         # since a DNF has no reliable finish time.
         if laps is not None:
             total_laps += laps
+
+        if (is_ap or points == AP_MARKER or status == "AP") and not is_real:
+            if ap_credit_rounds is None or rnd in ap_credit_rounds:
+                ap_credited += 1
 
         if is_real:
             races_completed += 1
@@ -565,10 +578,11 @@ def compute_stats(history: List[Tuple], pace_grades: Dict[int, Optional[float]],
     # Milestone badge: highest threshold reached, "Full House" beats
     # the numeric thresholds if the season is complete for this rider.
     milestone_badge = None
+    rounds_credited = races_completed + ap_credited
     for threshold in MILESTONE_THRESHOLDS:
-        if races_completed >= threshold:
+        if rounds_credited >= threshold:
             milestone_badge = f"{threshold} Rounds"
-    if season_length and races_completed >= season_length:
+    if season_length and rounds_credited >= season_length:
         milestone_badge = "Full House"
 
     is_newbie = not (race_category_previous_year or "").strip()
@@ -580,6 +594,8 @@ def compute_stats(history: List[Tuple], pace_grades: Dict[int, Optional[float]],
 
     return {
         "races_completed": races_completed,
+        "ap_credited": ap_credited,
+        "rounds_credited": rounds_credited,
         "best_cat_position": best_cat_position,
         "best_points": best_points,
         "best_round": best_round,
@@ -1055,6 +1071,17 @@ def main():
         else:
             print(f"⚠️  No round info loaded from {args.rounds_file} — pages will show plain 'Round N'.")
 
+    # Rounds really HELD (any real finisher in any DB given): an average-points round
+    # only counts towards the round badges / Full House if the round was actually run.
+    held_rounds = set()
+    for db_file in args.db:
+        if Path(db_file).exists():
+            t = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+            held_rounds |= {r[0] for r in t.execute(
+                "SELECT DISTINCT round FROM results WHERE status='FIN' AND COALESCE(is_ap,0)=0 AND points<>999")
+                if r[0] is not None and r[0] <= args.rounds}
+            t.close()
+
     admin_rows = []  # race_number, name, club, category, source_db  -- ADMIN ONLY, do not publish
     written = 0
     skipped_no_number = 0
@@ -1100,6 +1127,7 @@ def main():
                 race_category=race_category,
                 race_category_previous_year=race_category_prev,
                 average_points_last_year=avg_last_year,
+                ap_credit_rounds=held_rounds,
             )
 
             career = None
@@ -1112,7 +1140,8 @@ def main():
                         rider_career.sanitize_history(history, AP_MARKER), {},
                         season_length=args.rounds, race_category=race_category,
                         race_category_previous_year=race_category_prev,
-                        average_points_last_year=avg_last_year)
+                        average_points_last_year=avg_last_year,
+                        ap_credit_rounds=held_rounds)
                     career = rider_career.build_career(hist, person_id, args.season,
                                                        race_number, career_stats)
                     if career:
