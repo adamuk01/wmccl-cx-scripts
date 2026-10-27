@@ -121,6 +121,11 @@ def main():
                     help="leave this round OUT of the history entirely (races, laps, time, medals, "
                          "averages and the Full House count), e.g. 9 for Regional Champs. "
                          "Repeatable. Recorded in schema_info.")
+    ap.add_argument("--count-round", type=int, action="append", default=[], metavar="N",
+                    help="treat this round as HELD (a round of the season that riders were expected to "
+                         "attend) even though nobody has a real finish in it -- e.g. 10 for a round "
+                         "where every category was given average points. Its AP then counts towards "
+                         "round badges, and a rider with no result in it misses Full House. Repeatable.")
     ap.add_argument("--round-note", action="append", default=[], metavar="N=TEXT",
                     help='note shown with a round, e.g. 9="Regional Champs: average points awarded". Repeatable.')
     ap.add_argument("--ap-only", action="append", default=[], metavar="ROUND:DB",
@@ -183,6 +188,7 @@ def main():
             "SELECT DISTINCT round FROM results WHERE status='FIN' AND is_ap=0 AND points<>999")}
         all_rounds |= {r[0] for r in t.execute("SELECT DISTINCT round FROM results")}
         t.close()
+    held_rounds |= set(args.count_round)
     held_rounds -= excluded
     all_rounds -= excluded
     league_rounds = args.rounds or len(held_rounds)
@@ -208,7 +214,9 @@ def main():
         except sqlite3.Error:
             pass
         # rounds this category is expected to RACE: a round it is AP-only for (--ap-only) isn't one
-        season_len = args.rounds or len(held_rounds - {r for (r, d) in ap_only if d == dbp.name})
+        # An AP round in a round that was really held counts as a round completed, so
+        # the season length is every held round -- including ones this DB took AP for.
+        season_len = args.rounds or len(held_rounds)
         max_round = rc.execute("SELECT COALESCE(MAX(round),0) FROM results").fetchone()[0]
         real_by_round = dict(rc.execute(
             "SELECT round, COUNT(*) FROM results WHERE status='FIN' AND is_ap=0 AND points<>999 GROUP BY round"))
@@ -313,20 +321,30 @@ def main():
                 if kind == "new":
                     counts["new"] += 1
             else:
-                if bc is not None:
+                # Seasons may be archived in any order. Only a season at least as recent as
+                # the newest one already on file may refresh the person's BC number, and the
+                # person's first_season is always the EARLIEST season they appear in.
+                newest = hc.execute(
+                    "SELECT MAX(season) FROM season_stats WHERE person_id=? AND season<>?",
+                    (person_id, args.season)).fetchone()[0]
+                if bc is not None and (newest is None or args.season >= newest):
                     hc.execute("UPDATE person SET BC_number=? WHERE person_id=?", (bc, person_id))
+                hc.execute("UPDATE person SET first_season=? WHERE person_id=? "
+                           "AND (first_season IS NULL OR first_season>?)",
+                           (args.season, person_id, args.season))
                 hc.execute("UPDATE person SET gender=? WHERE person_id=? AND (gender IS NULL OR gender='')",
                            (rh.norm(gender), person_id))
 
             # -- stats (same function the rider pages use) ----------------------------
-            st = compute_stats(history, {}, season_length=season_len,
+            st = compute_stats(history, {}, season_length=season_len, ap_credit_rounds=held_rounds,
                                race_category=cat, race_category_previous_year=cat_prev,
                                average_points_last_year=avg_ly)
             tiers = list(st["medal_rounds"].values())
             # AP value exactly as the league tables compute it at season end
             pts_map = {(rid, h[0]): (h[3], h[4]) for h in history}
             ap_value = rider_avg_this_season(rid, pts_map, max_round)
-            ap_rounds = sum(1 for h in history if h[4] or h[3] == AP_MARKER)
+            # AP rounds credited as rounds completed (held rounds only)
+            ap_rounds = st["ap_credited"]
             hc.execute("""
                 INSERT INTO season_stats(person_id, season, source_db, race_number, race_category,
                     race_category_previous_year, BC_number_entered, rounds_in_season,
