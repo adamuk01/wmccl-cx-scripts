@@ -57,8 +57,17 @@ Season labels are always written `2026-27`.
 ## B. START OF THE NEW SEASON
 
 1. **Build the new season as usual:** new DBs (`create_db.py`), RiderHQ import, `validate_and_allocate_entrants.py`, categories with `assign-category.py` (check `--season-end-year` — auto-detect treats Aug–Dec as the *next* year; use the right one when re-building old data).
-2. **Last-year carry-forward** (previous category and average): the existing `export_prev_year_stats.py` / `apply_prev_year_stats.py` route matches by name + DOB and misses name changes (e.g. Zofia → Zosia). Run `assign_person_ids.py` (below) and read its **AUDIT** section — it lists riders whose previous-year fields are blank or disagree with the history so you can fix them by hand. *(Known: `export_prev_year_stats.py` selects columns that no longer exist in the current schema and needs fixing before it is used; an automatic `--fill-prev-year` option is not built yet.)*
-3. **Link riders to people.** Dry run, read, then apply:
+2. **Link riders to people first (step 3 below), then fill last-year category and average from the history** — this replaces `export_prev_year_stats.py` + `apply_prev_year_stats.py` (and the separate `adjust_prev_avg_on_cat_change.py`):
+
+   ```
+   apply_prev_year_from_history.py --history wmccl_history.db --season 2027-28 \
+       --db U8.db --cat-change-delta -10 --report prev_U8.csv        # dry run
+   # happy? add --apply.  Repeat per DB with its own delta (-10 youth DBs, -5 Women/Seniors, +5 Masters)
+   ```
+
+   It uses each rider's `person_id` (so name changes and new race numbers don't matter), takes their newest earlier season's category and average, only fills riders whose two fields are blank, and applies the category-change adjustment **only to the riders it fills in that run** — so re-running for late entries never adjusts anyone twice. Riders who skipped last season are listed (GAP) with the season used. New riders (no `person_id`) stay blank, as before.
+
+3. **Link riders to people** (do this before step 2). Dry run, read, then apply:
 
    ```
    assign_person_ids.py --season 2027-28 --history wmccl_history.db \
