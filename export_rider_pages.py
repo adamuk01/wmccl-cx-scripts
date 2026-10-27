@@ -1146,6 +1146,9 @@ def main():
             career = None
             if hist is not None:
                 if person_id is None:
+                    # past season already archived: find the person by (season, DB, race number)
+                    person_id = hist.person_for(args.season, db_path.name, race_number)
+                if person_id is None:
                     no_person_id += 1
                 else:
                     # career figures use the archive's rules (AP rows carry no laps/time)
@@ -1160,6 +1163,10 @@ def main():
                     if career:
                         careers_written += 1
                         stats["is_newbie"] = False   # has earlier seasons on record
+                    elif hist.has_earlier_seasons(args.season):
+                        # history covers earlier seasons and this person isn't in them: new this season
+                        # (the DB's own previous-year field is blank for every rider of an old season)
+                        stats["is_newbie"] = True
 
             page_html = render_page(
                 race_number, firstname, surname, gender, club_name,

@@ -84,6 +84,20 @@ class History:
             row = self.conn.execute("SELECT value FROM schema_info WHERE key='page_template'").fetchone()
         self.page_template = (row[0] if row and row[0] else DEFAULT_PAGE_TEMPLATE)
 
+    def person_for(self, season: str, source_db: str, race_number: int) -> Optional[int]:
+        """person_id of an entry already ARCHIVED for `season` (lets past-season pages be
+        regenerated without riders.person_id being set in that season's DBs)."""
+        row = self.conn.execute(
+            "SELECT person_id FROM season_stats WHERE season=? AND source_db=? AND race_number=?",
+            (season, source_db, int(race_number))).fetchone()
+        return row[0] if row else None
+
+    def has_earlier_seasons(self, current_season: str) -> bool:
+        """False when `current_season` is the first season in the history (nobody can be
+        shown as new or returning from the history alone)."""
+        return self.conn.execute(
+            "SELECT 1 FROM season_stats WHERE season < ? LIMIT 1", (current_season,)).fetchone() is not None
+
     def prior_seasons(self, person_id: int, current_season: str) -> List[Dict]:
         cur = self.conn.execute("""
             SELECT season, source_db, race_number, race_category, races_completed, ap_rounds, laps,
