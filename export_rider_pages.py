@@ -982,7 +982,7 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
     # Last-year vs this-year average comparison
     compare_block = ""
     if stats["is_newbie"]:
-        compare_block = '  <div class="compare">First season with the league — no prior-year average to compare.</div>'
+        compare_block = '  <div class="compare">First season for which data is available — no prior-year average to compare.</div>'
     elif stats["avg_points_last_year"] is not None and stats["avg_points"] is not None:
         compare_block = (
             '  <div class="compare">'
