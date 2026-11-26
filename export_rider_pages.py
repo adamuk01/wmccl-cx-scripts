@@ -90,12 +90,19 @@ PACE GRADE (2026-09-19, leader scoping revised twice same day):
     from this page's HTML — the league site links to it from wherever
     makes sense alongside the results pages).
 
-WHAT COUNTS AS A "REAL" RESULT:
-    AP (average points) rows and DNF rows are excluded from points/
-    position/medal/milestone calculations. DNF rows DO still count
-    towards laps completed (they rode them) but not towards
-    total race time (no reliable finish time exists for a DNF). Pace
-    Grade follows the same rule (see above).
+WHAT COUNTS AS A RACE:
+    A finish counts as a race completed, with its position, medal, laps,
+    time and Pace Grade. This includes an average-points (AP) row that
+    still has a cat_position (Regional Champs: import the results, then
+    run allocate-average-points.py). Only its POINTS are replaced by the
+    average, so it is left out of best points, season best and the points
+    average.
+
+    An AP row with no position (volunteer, or a DNF later given AP) is not
+    a race completed; if it was held it is credited towards the round
+    badges instead (never both). DNF rows are excluded from position/medal
+    calculations. Laps always count if they were ridden; a DNF has no
+    reliable finish time, so adds no race time or Pace Grade.
 
 ROUND NAMES / VENUES:
     --rounds-file takes the SAME CSV used to populate each DB's `rounds`
@@ -180,6 +187,7 @@ from typing import Dict, List, Optional, Tuple
 
 import rider_career
 from pace_grade_scoring import (
+    is_real_result,
     compute_round_leader_paces,
     compute_rider_pace_grades,
     pace_grade_trend,
@@ -187,6 +195,10 @@ from pace_grade_scoring import (
 
 
 AP_MARKER = 999
+# A finish somebody really rode: a normal result, or an average-points row that
+# still has its position (Regional Champs). Used to decide which rounds were held.
+RACED_SQL = ("((status='FIN' AND COALESCE(is_ap,0)=0 AND points<>999) "
+             "OR (is_ap=1 AND cat_position IS NOT NULL))")
 MILESTONE_THRESHOLDS = [5, 10]  # "Full House" is handled separately, at season_length
 
 # Trend line only shown once a rider has at least this many graded
@@ -496,11 +508,12 @@ def compute_stats(history: List[Tuple], pace_grades: Dict[int, Optional[float]],
                   ap_credit_rounds: Optional[set] = None) -> Dict[str, object]:
     """
     ap_credit_rounds: rounds that were really HELD (somebody raced). An
-    average-points (AP) round in one of these counts as a round completed for
-    the milestone badges ("5 Rounds" / "10 Rounds" / "Full House") -- e.g. the
-    Regional Champs, where most categories are always given AP, so otherwise
-    nobody could ever earn Full House. None = every AP round counts. AP never
-    adds to races_completed, laps, time or points stats.
+    average-points (AP) round with no finish (e.g. a volunteer) in one of
+    these counts as a round completed for the milestone badges ("5 Rounds" /
+    "10 Rounds" / "Full House"). None = every such AP round counts.
+    An AP row that still has a position was raced (Regional Champs): it counts
+    as a race, with medal, laps and time, and not also as an AP credit.
+    AP never adds to the points stats.
 
     history rows: (round, cat_position, overall_position, points, is_ap,
                     status, laps_completed, finish_time_seconds)
@@ -530,22 +543,24 @@ def compute_stats(history: List[Tuple], pace_grades: Dict[int, Optional[float]],
     graded_rounds: List[Tuple[int, float]] = []
 
     for rnd, cat_pos, overall_pos, points, is_ap, status, laps, time_sec in history:
-        is_real = (status == "FIN") and not is_ap and points != AP_MARKER
+        ap_row = bool(is_ap) or points == AP_MARKER or status == "AP"
+        raced = is_real_result(status, ap_row, cat_pos)
 
         # Laps count even on a DNF (they still rode them); time does not,
         # since a DNF has no reliable finish time.
         if laps is not None:
             total_laps += laps
 
-        if (is_ap or points == AP_MARKER or status == "AP") and not is_real:
+        if ap_row and not raced:
             ap_all += 1
             if ap_credit_rounds is None or rnd in ap_credit_rounds:
                 ap_credited += 1
 
-        if is_real:
+        if raced:
             races_completed += 1
 
-            p = safe_float(points)
+            # an AP row's points are the 999 marker, never a real score
+            p = None if ap_row else safe_float(points)
             if p is not None:
                 real_points.append(p)
                 if best_points is None or p > best_points:
@@ -932,7 +947,12 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
     else:
         for rnd, cat_pos, overall_pos, points, is_ap, status, laps, time_sec in history:
             if is_ap or points == AP_MARKER:
-                status_disp = "AP"
+                if cat_pos is not None:
+                    status_disp = "AP (raced)"
+                elif laps:
+                    status_disp = "AP (DNF)"
+                else:
+                    status_disp = "AP"
                 points_disp = '<span class="ap">avg</span>'
             else:
                 status_disp = esc(status or "")
@@ -948,7 +968,7 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
             best_tag = '<span class="best-tag">★ Season best</span>' if is_best else ""
 
             grade = pace_grades.get(rnd)
-            pace_grade_disp = format_pct(grade) if (status == "FIN" and not is_ap) else "—"
+            pace_grade_disp = format_pct(grade)  # None (shown as a dash) unless raced
             is_best_pace = (rnd == best_pace_round) and best_pace_round is not None
             pace_best_tag = (
                 '<span class="pace-best-tag">⚡ Best pace</span>' if is_best_pace else ""
@@ -1015,7 +1035,7 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
         badges=badges_html,
         races_completed=stats["races_completed"],
         ap_suffix=(f' <span class="ap-extra" title="Average-points round(s): count towards round badges and Full House '
-                   f'(when the round was held), but not as races, laps or time">+&nbsp;{stats["ap_all"]}&nbsp;AP</span>'
+                   f'(when the round was held), but not as a race">+&nbsp;{stats["ap_all"]}&nbsp;AP</span>'
                    if stats.get("ap_all") else ""),
         best_cat_position=fmt(stats["best_cat_position"], 0),
         best_points=fmt(stats["best_points"], 0),
@@ -1119,7 +1139,7 @@ def main():
         t = sqlite3.connect(f"file:{f}?mode=ro", uri=True)
         try:
             held_rounds |= {r[0] for r in t.execute(
-                "SELECT DISTINCT round FROM results WHERE status='FIN' AND COALESCE(is_ap,0)=0 AND points<>999")
+                f"SELECT DISTINCT round FROM results WHERE {RACED_SQL}")
                 if r[0] is not None and r[0] <= args.rounds}
         except sqlite3.Error:
             pass
@@ -1184,15 +1204,8 @@ def main():
                 if person_id is None:
                     no_person_id += 1
                 else:
-                    # career figures use the archive's rules (AP rows carry no laps/time)
-                    career_stats = compute_stats(
-                        rider_career.sanitize_history(history, AP_MARKER), {},
-                        season_length=args.rounds, race_category=race_category,
-                        race_category_previous_year=race_category_prev,
-                        average_points_last_year=avg_last_year,
-                        ap_credit_rounds=held_rounds)
                     career = rider_career.build_career(hist, person_id, args.season,
-                                                       race_number, career_stats)
+                                                       race_number, stats)
                     if career:
                         careers_written += 1
                         stats["is_newbie"] = False   # has earlier seasons on record

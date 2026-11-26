@@ -18,9 +18,9 @@ A rider with no person_id, or no earlier season in the history (a new
 rider), simply gets no career section.
 
 RULES THAT KEEP THIS SEASON CONSISTENT WITH THE ARCHIVE
-  Average-points (AP) rows never carry laps or time (see sanitize_history),
-  exactly as archive_season.py stores them, so the career figure at
-  mid-season equals what the archive will record at season end.
+  Both use compute_stats(), so the career figure at mid-season equals what
+  the archive will record at season end. An average-points (AP) ride keeps
+  its laps and time; only its points are replaced by the average.
 
 PRIVACY
   Only counts and links are shown -- never DOB, never BC number.
@@ -106,6 +106,7 @@ class History:
                    (SELECT COUNT(*) FROM round_results r
                      WHERE r.season = s.season AND r.source_db = s.source_db
                        AND r.race_number = s.race_number AND r.is_ap = 1
+                       AND r.cat_position IS NULL     -- a raced AP round is already a race
                        AND r.counts_for_career = 1) AS ap_all
             FROM season_stats s WHERE person_id = ? AND season < ?
             ORDER BY season, source_db, race_number
@@ -115,16 +116,6 @@ class History:
 
     def close(self):
         self.conn.close()
-
-
-def sanitize_history(history: List[Tuple], ap_marker: int = 999) -> List[Tuple]:
-    """AP rows never carry laps/time (matches archive_season.py)."""
-    out = []
-    for (rnd, cpos, opos, pts, is_ap, status, laps, time_) in history:
-        if is_ap or pts == ap_marker:
-            laps, time_ = None, None
-        out.append((rnd, cpos, opos, pts, is_ap, status, laps, time_))
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +130,7 @@ def build_career(hist: History, person_id: Optional[int], current_season: str,
                  current_race_number: int, live_stats: Dict) -> Optional[Dict]:
     """
     Combine earlier seasons (history) with this season's live stats.
-    live_stats must come from compute_stats() on sanitize_history() output.
+    live_stats must come from compute_stats().
     Returns None when there is nothing to show (no person_id / new rider).
     """
     if person_id is None:
@@ -269,7 +260,7 @@ def render_career_block(career: Optional[Dict], current_season: str,
       <tbody>
 {body}      </tbody>
     </table>
-    <p class="career-note">Career includes this season so far. AP = average-points round: counts towards round badges and Full House (if the round was held), but not as a race, laps or time.</p>
+    <p class="career-note">Career includes this season so far. A round you raced for average points (e.g. Regional Champs) counts as a normal race. + AP = average points without a finish: counts towards round badges and Full House (if the round was held), but not as a race.</p>
     <ul class="prev-seasons">
 {items}    </ul>
   </div>

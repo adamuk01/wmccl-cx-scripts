@@ -16,6 +16,8 @@ WHAT IT TAKES FROM THE HISTORY
         avg_points     ->  average_points_last_year
     (avg_points = the average of their real race points that season; average-
     points rounds are not part of it -- the same figure the old export used.)
+    A season with no such average (e.g. their only ride was an average-points
+    Regional Champs) is passed over in favour of the one before.
 
     Normally that is last season. If the rider skipped last season it uses the
     newest season they did ride, and says so (GAP) so you can decide.
@@ -88,7 +90,7 @@ def main():
     latest = {}
     for pid, season, cat, avg in hist.execute(
             "SELECT person_id, season, race_category, avg_points FROM season_stats "
-            "WHERE season < ? ORDER BY season", (args.season,)):
+            "WHERE season < ? AND avg_points IS NOT NULL ORDER BY season", (args.season,)):
         latest[pid] = (season, cat, avg)
     last_season = prev_season_label(args.season)
 

@@ -8,8 +8,9 @@ person_id.
 
 Run it from the folder that contains export_rider_pages.py -- it imports
 compute_stats() from there so the history figures can never drift from what
-the rider pages show (laps count even on a DNF; time and races count real
-finishes only; AP rows never count as races).
+the rider pages show (laps count even on a DNF; time and races count
+finishes only, including a Regional Champs finish that was given average
+points; an AP row with no finish never counts as a race).
 
 SAFE BY DEFAULT: a DRY RUN. Nothing is written unless you pass --apply.
 Re-running a season replaces that season's season_stats rows (idempotent);
@@ -54,9 +55,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import rider_history as rh
+from pace_grade_scoring import is_real_result
 
 try:
-    from export_rider_pages import compute_stats, load_results_for_rider
+    from export_rider_pages import compute_stats, load_results_for_rider, RACED_SQL
     from league_scoring import rider_avg_this_season, AP_MARKER
 except ImportError as e:  # pragma: no cover
     raise SystemExit(
@@ -185,7 +187,7 @@ def main():
             raise SystemExit(f"❌ DB not found: {f}")
         t = sqlite3.connect(f"file:{f}?mode=ro", uri=True)
         held_rounds |= {r[0] for r in t.execute(
-            "SELECT DISTINCT round FROM results WHERE status='FIN' AND is_ap=0 AND points<>999")}
+            f"SELECT DISTINCT round FROM results WHERE {RACED_SQL}")}
         all_rounds |= {r[0] for r in t.execute("SELECT DISTINCT round FROM results")}
         t.close()
     held_rounds |= set(args.count_round)
@@ -219,7 +221,7 @@ def main():
         season_len = args.rounds or len(held_rounds)
         max_round = rc.execute("SELECT COALESCE(MAX(round),0) FROM results").fetchone()[0]
         real_by_round = dict(rc.execute(
-            "SELECT round, COUNT(*) FROM results WHERE status='FIN' AND is_ap=0 AND points<>999 GROUP BY round"))
+            f"SELECT round, COUNT(*) FROM results WHERE {RACED_SQL} GROUP BY round"))
         empty = sorted(r for r in held_rounds if not real_by_round.get(r) and (r, dbp.name) not in ap_only)
         if empty:
             warnings.append(f"{dbp.name}: no real finishers in round(s) {', '.join(map(str, empty))}, "
@@ -241,13 +243,9 @@ def main():
             if race_no is None:
                 continue
             history_all = load_results_for_rider(rc, rid, max(max_round, season_len, *excluded or [0]))
-            # AP rows never carry laps or time, even if the source row happens to hold some
-            history_all = [(r, cp, op, pt, ap_, st_, None, None) if (ap_ or pt == AP_MARKER) else
-                           (r, cp, op, pt, ap_, st_, lp, tm)
-                           for (r, cp, op, pt, ap_, st_, lp, tm) in history_all]
             history = [h for h in history_all if h[0] not in excluded]
             # someone with no real finish at all (never raced / only ever AP) has no history
-            if not any(h[5] == "FIN" and not h[4] and h[3] != AP_MARKER for h in history):
+            if not any(is_real_result(h[5], h[4] or h[3] == AP_MARKER, h[1]) for h in history):
                 counts["never_raced"] += 1
                 continue
 
