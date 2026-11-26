@@ -706,15 +706,36 @@ BACK_LINK_SCRIPT = """<script>
   try {
     var link = document.getElementById('wmccl-back-link');
     if (!link) return;
-    // Arrived from another season's rider page (it passes ?back=<relative path to itself>):
-    // go straight back to THAT page. Only plain relative .html paths are accepted.
+    // Previous-season pages are reached from a newer rider page via a link carrying
+    // ?back=<relative path to that newer page> (plain relative .html paths only).
     var back = null;
     try { back = new URLSearchParams(window.location.search).get('back'); } catch (e) { /* old browser */ }
-    if (back && /^[A-Za-z0-9_.\\/-]+\\.html$/.test(back) && back.indexOf('//') < 0) {
+    if (back && !(/^[A-Za-z0-9_.\\/-]+\\.html$/.test(back) && back.indexOf('//') < 0)) back = null;
+
+    var canGoBack = !!(window.history && history.length > 1);
+
+    if (back) {
+      // Never navigate FORWARD to the newer page when the browser history already holds
+      // it: that pushes a new entry, and the newer page's own Back (history.back) would
+      // then bounce straight back here - an endless loop between seasons.
+      var backPath = new URL(back, window.location.href).pathname;
+      var cameFromIt = false;
+      try {
+        var ref = document.referrer ? new URL(document.referrer) : null;
+        cameFromIt = !!ref && ref.origin === window.location.origin && ref.pathname === backPath;
+      } catch (e) { /* ignore */ }
       link.setAttribute('href', back);
+      link.addEventListener('click', function (e) {
+        e.preventDefault();
+        if (canGoBack && cameFromIt) {
+          history.back();            // unwinds the chain one step, like a real Back button
+        } else {
+          window.location.replace(back);   // opened directly (new tab etc.): replace, so no loop
+        }
+      });
       return;
     }
-    if (window.history && history.length > 1) {
+    if (canGoBack) {
       link.addEventListener('click', function (e) {
         e.preventDefault();
         history.back();
@@ -961,7 +982,7 @@ def render_page(race_number: int, firstname: str, surname: str, gender: str,
     # Last-year vs this-year average comparison
     compare_block = ""
     if stats["is_newbie"]:
-        compare_block = '  <div class="compare">First season with the league — no prior-year average to compare.</div>'
+        compare_block = '  <div class="compare">First season for which data is available — no prior-year average to compare.</div>'
     elif stats["avg_points_last_year"] is not None and stats["avg_points"] is not None:
         compare_block = (
             '  <div class="compare">'
